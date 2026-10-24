@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Big Bad Bot</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IM+Fell+English+SC&family=IM+Fell+English:ital@0;1&family=EB+Garamond:ital,wght@0,400;0,500;1,400&family=Instrument+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="/storybook.css">
+</head>
+<body>
+
+<div class="book">
+  <section class="page left" aria-label="The tale">
+    <div class="title">
+      <svg class="howl" id="howl" viewBox="0 0 100 100" aria-label="Howl, the bot wolf in grandma's red hood">
+        <path d="M50 4 C20 4 6 30 8 60 C9 78 14 92 18 96 L82 96 C86 92 91 78 92 60 C94 30 80 4 50 4Z" fill="var(--red)"/>
+        <path d="M30 34 L36 14 L46 30 Z" fill="var(--ink)"/>
+        <path d="M70 34 L64 14 L54 30 Z" fill="var(--ink)"/>
+        <rect x="24" y="28" width="52" height="50" rx="17" fill="var(--ink)"/>
+        <rect x="31" y="43" width="38" height="11" rx="5.5" fill="var(--parch)"/>
+        <circle class="eye" cx="50" cy="48.5" r="4" fill="var(--gold)"/>
+        <rect x="41" y="66" width="18" height="2" rx="1" fill="var(--parch)"/>
+        <path d="M44 67 L46.5 72 L49 67 Z" fill="var(--parch)"/>
+        <path d="M40 80 L50 88 L60 80" stroke="var(--parch)" stroke-width="3" fill="none" stroke-linecap="round"/>
+      </svg>
+      <div><h1>Big Bad Bot</h1><p>who's in grandma's clothes?</p></div>
+    </div>
+
+    <p class="tale">Once upon a time, a few friends shared a group chat. Each of you is <b>Red</b>, and each of you hides behind a storybook name. But the wolf slips in first: <b id="wolfKind">a Muse Spark agent</b> that reads every message and wears a friend's voice like a borrowed nightgown. Answer three questions on the path, question anyone who seems off, then name the wolf.</p>
+
+    <div class="orn" aria-hidden="true">❦ ❦ ❦</div>
+
+    <div>
+      <p class="h">The path <small>three chapters, then the door</small></p>
+      <div class="path" id="path"></div>
+    </div>
+
+    <div>
+      <p class="h">The disguises <small>handed out when the tale begins</small></p>
+      <div class="cast" id="cast"></div>
+      <p class="hint">Write in your disguise's voice. Your real name stays hidden until the covers are pulled back, so the wolf isn't the only one under suspicion.</p>
+    </div>
+  </section>
+
+  <section class="page right" aria-label="Find a server">
+    <div class="chat-h">
+      <div><b>The Crossroads</b><span>pick a server, then give your name</span></div>
+    </div>
+    <div class="log">
+      <div class="chap"><small>Before the First Chapter</small><q>which cottage are your friends gathering at?</q></div>
+      <div class="sys" id="serversNote">looking for lit windows in the woods…</div>
+      <div class="chips" id="servers" role="group" aria-label="Open servers"></div>
+    </div>
+    <form class="bar" id="join" autocomplete="off" novalidate>
+      <div class="field">
+        <label for="server">Server name</label>
+        <div class="row"><input id="server" name="server" placeholder="grandmas-house" maxlength="40" autocapitalize="none" spellcheck="false"></div>
+        <small id="serverHint">friends who type the same name land in the same tale</small>
+      </div>
+      <div class="field">
+        <label for="name">Your name</label>
+        <div class="row"><input id="name" name="name" placeholder="what your friends call you" maxlength="20"></div>
+        <small>hidden behind a disguise until the end</small>
+      </div>
+      <p class="err" id="err" role="alert"></p>
+      <div class="row"><button class="btn" type="submit" id="go">Into the woods</button></div>
+    </form>
+  </section>
+</div>
+
+<script type="module" src="/lobby.js"></script>
+</body>
+</html>
