@@ -32,6 +32,9 @@ import {
   sys,
   tick,
   type Timing,
+  warmReady,
+  warmReply,
+  warmSay,
 } from "./game.ts";
 
 const TTL = 6 * 60 * 60_000;
@@ -274,6 +277,13 @@ export class Store {
         case "say":
           drafts = say(room, seat, body.text, now, t);
           break;
+        case "warm":
+          warmSay(room, me.id, body.text, now);
+          drafts = [];
+          break;
+        case "ready":
+          drafts = warmReady(room, me.id, now, t);
+          break;
         case "onward":
         case "early":
           drafts = proceed(room, type, me.id, isHost, here, now, t);
@@ -333,6 +343,16 @@ export class Store {
     const room = await this.room(slug);
     if (room) await this.kv.delete([...keys.typing(slug), room.wolfSeat]);
     return msgs.length > 0;
+  }
+
+  /** The wolf's answer in one player's private warm-up chat. */
+  async wolfWarm(slug: string, game: number, playerId: string, text: string): Promise<void> {
+    await this.mutate(slug, (room, now) => {
+      if (!room || room.game !== game || room.phase !== "warmup") return null;
+      if (room.warmup[playerId]?.at(-1)?.from !== "you") return null;
+      room.wolfError = null;
+      return { room, drafts: warmReply(room, playerId, text, now, this.timing) };
+    });
   }
 
   async wolfVote(slug: string, game: number, target: number): Promise<void> {

@@ -93,6 +93,8 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--gold);outline-o
 .msg.me .seal{background:var(--red-deep)}
 .msg.tell .b{border-color:var(--gold);background:color-mix(in srgb,var(--gold) 16%,var(--cream));box-shadow:0 0 0 3px color-mix(in srgb,var(--gold) 30%,transparent)}
 .sys{align-self:center;text-align:center;font-family:var(--tale);font-style:italic;font-size:15px;color:var(--muted);max-width:90%;line-height:1.45}
+.warm{display:flex;flex-direction:column;gap:10px}
+.seal.wolfseal{background:var(--ink);color:var(--gold)}
 .chap{align-self:stretch;text-align:center;padding:14px 8px 6px}
 .chap small{display:block;font-family:var(--display);font-size:13px;letter-spacing:.14em;color:var(--gold)}
 .chap q{display:block;font-family:var(--tale);font-style:italic;font-size:23px;line-height:1.2;quotes:none;text-wrap:balance;margin-top:4px}

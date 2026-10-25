@@ -28,6 +28,15 @@ export function castById(id: string): CastMember {
   return c;
 }
 
+/** How the wolf opens each player's private warm-up chat. */
+export const WARMUP_OPENERS = [
+  "hey, so what do you usually do on a saturday?",
+  "hi! before we start, tell me what you had for lunch",
+  "hey you. how's your day going so far",
+  "ok quick, what's the last thing you watched",
+  "yo, what are you up to right now",
+];
+
 export const CHAPTERS = ["Chapter the First", "Chapter the Second", "Chapter the Third"];
 
 /** The third chapter always ends on the design's closing question. */

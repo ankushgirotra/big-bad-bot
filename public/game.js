@@ -7,7 +7,7 @@ const token = store.get(`bbb:${server}`)?.token;
 if (!server || !token) location.replace(`/?server=${encodeURIComponent(server)}`);
 
 const PALETTE = ['#9c3d6e', '#3b5f8f', '#3d6b4f', '#5d4a8a', '#a2621f', '#2f6f73', '#7a3b2e', '#6b6a2a'];
-const CLOCK_NOTE = { answer: 'to answer', discuss: 'to talk it over', vote: 'to choose' };
+const CLOCK_NOTE = { warmup: 'to chat with the wolf', answer: 'to answer', discuss: 'to talk it over', vote: 'to choose' };
 
 let V = null; // the latest view
 let skew = 0; // server clock minus ours
@@ -68,6 +68,30 @@ function addMsg(m) {
   else say(m);
 }
 
+// ---- the warm-up chat: a private conversation with the wolf ----------------------
+
+function renderWarm() {
+  const log = $('log');
+  let box = $('warm');
+  if (V.phase !== 'warmup') return void box?.remove();
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'warm';
+    box.className = 'warm';
+    log.append(box);
+  }
+  const lines = V.warm.lines;
+  const sig = JSON.stringify(lines);
+  if (box.dataset.sig === sig) return;
+  box.dataset.sig = sig;
+  const pinned = log.scrollHeight - log.scrollTop - log.clientHeight < 60;
+  box.innerHTML = `<div class="chap"><small>A quiet word</small><q>chat with the wolf like you would with a friend. it's learning how you text.</q></div>`
+    + lines.map((l) => l.from === 'you'
+      ? `<div class="msg me"><span class="seal">R</span><div class="b">${esc(l.text)}</div></div>`
+      : `<div class="msg"><span class="seal wolfseal">W</span><div class="b"><span class="who">the wolf</span><span class="tx">${esc(l.text)}</span></div></div>`).join('');
+  if (pinned) scroll();
+}
+
 // ---- the left page --------------------------------------------------------------
 
 function renderTale() {
@@ -92,7 +116,7 @@ function renderWolfError() {
 }
 
 function stopIndex() {
-  if (V.phase === 'lobby') return 0;
+  if (V.phase === 'lobby' || V.phase === 'warmup') return 0;
   if (V.phase === 'vote' || V.phase === 'reveal') return 4;
   return V.chapter + 1;
 }
@@ -164,6 +188,7 @@ function renderTyping() {
   t.classList.toggle('err', !!flash);
   if (flash) return void (t.textContent = flash);
   if (offline) return void (t.textContent = 'the path went dark… finding it again');
+  if (V?.phase === 'warmup' && V.warm.lines.at(-1)?.from === 'you') return void (t.textContent = 'the wolf is writing…');
   const names = V ? V.seats.filter((s) => s.typing && s.seat !== mySeat()).map((s) => s.name) : [];
   t.textContent = names.length === 0 ? ''
     : names.length === 1 ? `${names[0]} is writing…`
@@ -220,6 +245,27 @@ function barFor(v) {
             await act('leave');
             location.href = '/';
           };
+        },
+      };
+    }
+    case 'warmup': {
+      const w = v.warm;
+      const sent = w.lines.filter((l) => l.from === 'you').length;
+      const waiting = w.lines.at(-1)?.from === 'you';
+      if (w.ready || (sent >= w.turns && !waiting)) {
+        return {
+          sig: `warm|done|${v.counts.warmed}`,
+          html: `<div class="sys">the wolf has what it needs. waiting for the others… ${v.counts.warmed} of ${v.counts.players} done</div>`,
+          bind() {},
+        };
+      }
+      return {
+        sig: `warm|${sent}|${waiting}|${sent >= w.min}`,
+        html: `<form class="row" id="f"><input id="say" placeholder="${waiting ? 'the wolf is writing…' : 'say something to the wolf…'}" maxlength="280" autocomplete="off" aria-label="Message" ${waiting ? 'disabled' : ''}><button class="btn ghost" type="submit" ${waiting ? 'disabled' : ''}>Send</button></form>
+          <div class="row"><span class="sys">${sent} of ${w.turns} messages</span>${sent >= w.min ? '<button class="btn" id="rdy" type="button">I’m ready</button>' : ''}</div>`,
+        bind() {
+          bindForm('warm');
+          $('rdy') && ($('rdy').onclick = () => act('ready'));
         },
       };
     }
@@ -298,16 +344,16 @@ function barFor(v) {
   }
 }
 
-function bindForm() {
+function bindForm(type = 'say') {
   $('f').onsubmit = async (e) => {
     e.preventDefault();
     const input = $('say');
     const text = input.value.trim();
     if (!text) return;
-    if (await act('say', { text })) input.value = '';
+    if (await act(type, { text })) input.value = '';
   };
   $('say').oninput = () => {
-    if (Date.now() - lastTyping > 2500) {
+    if (type === 'say' && Date.now() - lastTyping > 2500) {
       lastTyping = Date.now();
       act('typing');
     }
@@ -327,7 +373,7 @@ function renderBar() {
   const input = $('say');
   if (input) {
     input.value = draft;
-    if (focused || V.phase === 'answer') input.focus();
+    if (focused || V.phase === 'answer' || (V.phase === 'warmup' && !input.disabled)) input.focus();
   }
 }
 
@@ -364,6 +410,7 @@ function render() {
   renderHeader();
   renderTyping();
   renderBar();
+  renderWarm();
   renderEnd();
   $('howl').classList.toggle('hunt', V.phase === 'vote' || V.phase === 'reveal');
 }

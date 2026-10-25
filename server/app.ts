@@ -29,6 +29,7 @@ export function configFromEnv(env: Pick<Deno.Env, "get"> = Deno.env): Config {
     port: num("PORT", 8000),
     hostname: env.get("HOST") || "0.0.0.0",
     timing: {
+      warmupMs: num("WARMUP_SECONDS", 120) * 1000,
       answerMs: num("ANSWER_SECONDS", 60) * 1000,
       discussMs: num("DISCUSS_SECONDS", 75) * 1000,
       voteMs: num("VOTE_SECONDS", 45) * 1000,

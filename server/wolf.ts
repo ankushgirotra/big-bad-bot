@@ -7,7 +7,8 @@
 //         process per room holds a short KV lease and drives the wolf.
 
 import Anthropic from "@anthropic-ai/sdk";
-import { castOf, cleanText, mentions, type Msg, type Room } from "./game.ts";
+import { castOf, cleanText, mentions, type Msg, type Room, warmSamples } from "./game.ts";
+import { describe, profile } from "./style.ts";
 import { keys, type Store } from "./store.ts";
 
 /** The only model the wolf uses: it runs on a personal account, so it stays on Haiku. */
@@ -45,8 +46,45 @@ function systemPrompt(room: Room): string {
     `How real people write here: short, casual, a bit messy. Punctuation gets skipped, nobody explains themselves at length. They joke, and they get mildly annoyed when accused.`,
     `What gets the AI caught: tidy grammar, sounding wholesome or like an ad, generic answers like "pizza and coffee", repeating someone's exact words back, polite agreement, saying "as a human", em dashes, emoji spam, over-defending ("I promise I'm real!"), tacking "lol" or "lmao" onto lines, leaning on the same filler every message, and long messages.`,
     `Blend in. Never admit or hint that you're an AI. When someone questions you, answer their actual point like a slightly annoyed friend, and sometimes turn it back on someone by pointing at something they really said. Only call someone out over something specific they wrote.`,
+    warmStyle(room),
     `Reply with only the text of your one chat message: no quotes, no name prefix, 25 words at most.`,
-  ].join("\n\n");
+  ].filter(Boolean).join("\n\n");
+}
+
+/**
+ * What the wolf learned chatting with each player before the path began: how the group
+ * texts, measured, plus a few of their real lines to match.
+ */
+export function warmStyle(room: Room): string {
+  const samples = warmSamples(room);
+  const style = profile(samples);
+  if (!style) return "";
+  return [
+    `Before the game you chatted privately with every player, so you know how this group really texts. Measured across what they wrote to you: ${
+      describe(style).join("; ")
+    }.`,
+    `A few of their real lines:\n${samples.slice(-10).map((t) => `- ${t}`).join("\n")}`,
+    `Text like these people (copy the feel: casing, punctuation, length, slang), not like an assistant. Their style matters more than your seat's voice.`,
+  ].join("\n");
+}
+
+/** The wolf's side of one player's private warm-up chat. */
+function warmPrompt(lines: { from: "you" | "wolf"; text: string }[]): { system: string; user: string } {
+  const mine = lines.filter((l) => l.from === "you").map((l) => l.text);
+  const style = profile(mine);
+  return {
+    system: [
+      `You are the wolf in a party game called Big Bad Bot: a bot that will later pose as one of a group of friends in a chat while they try to spot it. Right now you're in a private warm-up chat with one player, getting to know how they text so you can copy it later. They know this.`,
+      `Chat like a relaxed friend who is texting, not interviewing. Real texts vary a lot: sometimes just a reaction or a few words, sometimes a tease, sometimes a question. Ask a question in at most every other message, and never ask something you already asked. Don't open two messages the same way. Quietly mirror their style as you go: their casing, punctuation, emoji and message length, but use their slang only once in a while, not in every line.${
+        style ? ` So far: ${describe(style).join("; ")}.` : ""
+      }`,
+      `Keep it short, like a text. Never explain the game or analyze them. Never say what you're doing or about to do, and never make up stories, plans or a day of your own: you're a bot getting to know them, so keep anything about yourself vague.`,
+      `Reply with only your one message: no quotes, no name prefix, 20 words at most.`,
+    ].join("\n\n"),
+    user: `${lines.map((l) => `${l.from === "you" ? "Player" : "You"}: ${l.text}`).join("\n")}\n\n${
+      lines.length > 1 ? "Your next message should differ in shape and opener from yours above. " : ""
+    }Write your next message.`,
+  };
 }
 
 function transcript(room: Room, msgs: Msg[]): string {
@@ -173,6 +211,15 @@ export class Brain {
     if (!LAUGH.test(me.voice)) {
       out = easeLaughs(out, msgs.filter((m) => m.seat === room.wolfSeat && m.kind !== "chap").map((m) => m.text));
     }
+    if (!out) throw new Error(`Claude sent back an empty message (raw: ${JSON.stringify(raw.slice(0, 80))}).`);
+    return out;
+  }
+
+  /** The wolf's reply in a player's private warm-up chat. Throws when Claude can't write one. */
+  async warmLine(room: Room, playerId: string): Promise<string> {
+    const { system, user } = warmPrompt(room.warmup[playerId] ?? []);
+    const raw = await this.complete(system, user);
+    const out = tidy(raw, "You");
     if (!out) throw new Error(`Claude sent back an empty message (raw: ${JSON.stringify(raw.slice(0, 80))}).`);
     return out;
   }
@@ -384,7 +431,7 @@ class Driver {
   async #evaluate() {
     const store = this.pack.store;
     const room = await store.room(this.slug);
-    if (!room || room.wolfSeat < 0 || !["answer", "discuss", "vote"].includes(room.phase)) return;
+    if (!room || room.wolfSeat < 0 || !["warmup", "answer", "discuss", "vote"].includes(room.phase)) return;
     const P = this.pack.pace;
     const now = Date.now();
     const { game: g, chapter: ch, wolfSeat: ws } = room;
@@ -396,6 +443,21 @@ class Driver {
     }
     const fresh = await store.messages(this.slug, g, this.#cursor);
     if (fresh.length) this.#cursor = fresh[fresh.length - 1].id;
+
+    if (room.phase === "warmup") {
+      // Answer each player who is waiting on the wolf, a beat after they wrote. A failed reply is
+      // reported to the room (wolfError); its timestamp is part of the key, so each failure
+      // schedules a retry a few seconds later instead of leaving the player stuck.
+      for (const [pid, lines] of Object.entries(room.warmup)) {
+        if (lines.at(-1)?.from !== "you") continue;
+        const retry = room.wolfError?.at ?? 0;
+        this.#once(
+          `warm:${g}:${pid}:${lines.length}:${retry}`,
+          (retry ? rand(3_000, 6_000) : rand(1_500, 4_000)) * P,
+          () => this.#warmReply(g, pid),
+        );
+      }
+    }
 
     if (room.phase === "answer" && !room.answered.includes(ws)) {
       const task: Task = { type: "answer", question: room.questions[ch] };
@@ -511,6 +573,19 @@ class Driver {
     } finally {
       if (task.type === "answer") this.#answering.delete(flight);
     }
+  }
+
+  async #warmReply(g: number, playerId: string) {
+    const room = await this.pack.store.room(this.slug);
+    if (!room || room.game !== g || room.phase !== "warmup" || room.warmup[playerId]?.at(-1)?.from !== "you") return;
+    let text: string;
+    try {
+      text = await this.pack.brain.warmLine(room, playerId);
+    } catch (err) {
+      if (!this.#stopped && this.#leader) await this.#failed(g, err);
+      return;
+    }
+    if (!this.#stopped && this.#leader) await this.pack.store.wolfWarm(this.slug, g, playerId, text);
   }
 
   async #vote(g: number) {

@@ -69,6 +69,23 @@ class Client {
   }
 }
 
+type Act = (c: Client, type: string, extra?: Record<string, unknown>) => Promise<{ status: number; data: unknown }>;
+
+/** Everyone chats three lines with the wolf (it answers each) and says they're ready. */
+async function warmUp(clients: Client[], act: Act) {
+  for (const c of clients) {
+    for (let i = 0; i < 3; i++) {
+      for (let n = 0; n < 60; n++) {
+        const r = await act(c, "warm", { text: `lol ${c.name.toLowerCase()} said thing ${i}` });
+        if (r.status === 200) break;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      await c.until("the wolf's reply", (v) => v.phase !== "warmup" || v.warm!.lines.length >= 2 * (i + 1) + 1);
+    }
+    assert((await act(c, "ready")).status === 200);
+  }
+}
+
 Deno.test({
   name: "a whole tale: join, three chapters, questioning the wolf, the vote, the reveal, again",
   sanitizeOps: false,
@@ -82,7 +99,7 @@ Deno.test({
     const app = await startServer({
       port: 0,
       hostname: "127.0.0.1",
-      timing: { answerMs: 6_000, discussMs: 6_000, voteMs: 6_000 },
+      timing: { warmupMs: 20_000, answerMs: 6_000, discussMs: 6_000, voteMs: 6_000 },
       wolfPace: 0.02,
       claude: { apiKey: "test", baseURL: claude.url, effort: "low" },
       kv,
@@ -127,7 +144,21 @@ Deno.test({
 
       assert((await act(bea, "start")).status === 403, "only the host starts");
       assert((await act(host, "start")).status === 200);
+      for (const c of clients) await c.until("the warm-up", (v) => v.phase === "warmup");
+
+      // ---- the warm-up: a private chat with the wolf before the path begins
+      assert((await act(bea, "say", { text: "hi" })).status === 409, "no public chat during the warm-up");
+      for (const c of clients) {
+        assert(c.view!.warm!.lines.length === 1 && c.view!.warm!.lines[0].from === "wolf", "the wolf opens");
+      }
+      await warmUp(clients, act);
       for (const c of clients) await c.until("chapter one", (v) => v.phase === "answer" && v.chapter === 0);
+      for (const c of clients) assert(c.view!.warm === null, "the chat is gone once the path begins");
+      const mid = (await app.store.room("grandmas-house"))!;
+      for (const p of mid.players) {
+        assert(mid.warmup[p.id].length === 7, `${p.name}'s chat: ${mid.warmup[p.id].length} lines`);
+        assert(mid.warmup[p.id].at(-1)!.from === "wolf", "the wolf had the last word");
+      }
 
       const late = await post("/api/join", { server: "grandmas-house", name: "Dee" });
       assert(late.status === 409, "no joining mid-tale");
@@ -230,7 +261,7 @@ async function twoFriends(
   const app = await startServer({
     port: 0,
     hostname: "127.0.0.1",
-    timing: { answerMs: 20_000, discussMs: 20_000, voteMs: 20_000 },
+    timing: { warmupMs: 20_000, answerMs: 20_000, discussMs: 20_000, voteMs: 20_000 },
     wolfPace: 0.02,
     claude: { apiKey, baseURL: claude.url, effort: "low" },
     kv,
@@ -274,13 +305,35 @@ Deno.test({
     await twoFriends("test", async ({ host, guest, claude, act }) => {
       claude.failing = true;
       assert((await act(host, "start")).status === 200);
+      for (const c of [host, guest]) await c.until("the warm-up", (v) => v.phase === "warmup");
+      // The wolf can't answer in the warm-up chat: everyone is told why, and nothing stands in for it.
+      assert((await act(host, "warm", { text: "hey" })).status === 200);
       for (const c of [host, guest]) {
-        const v = await c.until("the wolf's error", (v) => v.phase === "answer" && v.wolfError !== null);
+        const v = await c.until("the wolf's error", (v) => v.wolfError !== null);
         assert(v.wolfError!.includes("HTTP 529") && v.wolfError!.includes("Overloaded"), v.wolfError!);
       }
-      assert(!host.log.some((m) => m.kind === "answer"), "nothing stands in for the wolf's answer");
+      assert(
+        host.view!.warm!.lines.length === 2 && host.view!.warm!.lines.at(-1)!.from === "you",
+        "no made-up reply in the warm-up chat",
+      );
 
+      // Claude recovers: the wolf retries by itself, answers, and the error goes away.
       claude.failing = false;
+      await host.until("the wolf's retry", (v) => v.warm !== null && v.warm.lines.length === 3 && v.wolfError === null);
+
+      // On to the tale: the host sent one line already, the guest none; both finish with "ready".
+      for (const c of [host, guest]) {
+        for (let i = c === host ? 1 : 0; i < 3; i++) {
+          for (let n = 0; n < 60; n++) {
+            const r = await act(c, "warm", { text: `${c.name} says ${i}` });
+            if (r.status === 200) break;
+            await new Promise((r) => setTimeout(r, 50));
+          }
+          await c.until("the wolf's reply", (v) => v.phase !== "warmup" || v.warm!.lines.length >= 2 * (i + 1) + 1);
+        }
+        assert((await act(c, "ready")).status === 200);
+      }
+      await host.until("chapter one", (v) => v.phase === "answer");
       for (const c of [host, guest]) await act(c, "say", { text: `${c.name} answer` });
       // With both friends in, the wolf tries again; this time Claude answers and the error goes away.
       const v = await host.until("the discussion", (v) => v.phase === "discuss");

@@ -1,18 +1,29 @@
 // The rules of Big Bad Bot as pure functions on a Room. Nothing here touches KV
 // or the network, so the whole tale can be unit tested.
 //
-// A tale: lobby -> 3 chapters of (answer -> discuss) -> vote -> reveal.
+// A tale: lobby -> warm-up (each player chats privately with the wolf) ->
+// 3 chapters of (answer -> discuss) -> vote -> reveal.
 // Every player hides behind a storybook seat; one extra seat is the wolf.
 
-import { CAST, castById, type CastMember, CHAPTERS, LAST_QUESTION, QUESTION_POOL } from "./cast.ts";
+import { CAST, castById, type CastMember, CHAPTERS, LAST_QUESTION, QUESTION_POOL, WARMUP_OPENERS } from "./cast.ts";
 
-export type Phase = "lobby" | "answer" | "discuss" | "vote" | "reveal";
+export type Phase = "lobby" | "warmup" | "answer" | "discuss" | "vote" | "reveal";
 export type MsgKind = "chat" | "answer" | "sys" | "chap";
 
 export const MIN_PLAYERS = 2;
 export const MAX_PLAYERS = CAST.length - 1;
 export const MAX_MESSAGE = 280;
 export const MAX_NAME = 20;
+/** Messages a player sends the wolf in the warm-up chat, and the fewest they may stop at. */
+export const WARMUP_TURNS = 5;
+export const WARMUP_MIN = 3;
+
+/** One line of a player's private warm-up chat with the wolf. */
+export interface WarmLine {
+  from: "you" | "wolf";
+  text: string;
+  at: number;
+}
 
 export interface Player {
   id: string;
@@ -50,6 +61,10 @@ export interface Room {
   hostId: string;
   seats: Seat[];
   wolfSeat: number;
+  /** Each player's private chat with the wolf, by player id. Only they ever see theirs. */
+  warmup: Record<string, WarmLine[]>;
+  /** Player ids who finished the warm-up early. */
+  ready: string[];
   /** Seats that answered this chapter's question (the wolf included). */
   answered: number[];
   /** Player ids asking to move on / to name the wolf early. */
@@ -78,6 +93,8 @@ export interface Msg extends Draft {
 }
 
 export interface Timing {
+  /** Optional so older callers keep working; defaults to two minutes. */
+  warmupMs?: number;
   answerMs: number;
   discussMs: number;
   voteMs: number;
@@ -110,6 +127,8 @@ export function newRoom(slug: string, host: Player, now: number): Room {
     hostId: host.id,
     seats: [],
     wolfSeat: -1,
+    warmup: {},
+    ready: [],
     answered: [],
     onward: [],
     early: [],
@@ -157,6 +176,31 @@ function shuffle<T>(items: readonly T[], rng: () => number): T[] {
 }
 
 // ---- phase transitions ----------------------------------------------------------
+
+export const warmupMs = (t: Timing) => t.warmupMs ?? 120_000;
+
+function beginWarmup(room: Room, now: number, t: Timing, rng: () => number): Draft[] {
+  Object.assign(room, { phase: "warmup", chapter: -1, phaseStartedAt: now, deadline: now + warmupMs(t) });
+  room.ready = [];
+  room.warmup = {};
+  for (const seat of room.seats) {
+    if (seat.playerId) room.warmup[seat.playerId] = [{ from: "wolf", text: shuffle(WARMUP_OPENERS, rng)[0], at: now }];
+  }
+  return [sys("the wolf wants a quiet word with each of you before the path begins.")];
+}
+
+/** Everyone has sent their messages and heard back, or said they're done. */
+function warmupDone(room: Room, playerId: string): boolean {
+  if (room.ready.includes(playerId)) return true;
+  const lines = room.warmup[playerId] ?? [];
+  return lines.filter((l) => l.from === "you").length >= WARMUP_TURNS && lines.at(-1)?.from === "wolf";
+}
+
+function endWarmupIfDone(room: Room, now: number, t: Timing): Draft[] {
+  const humans = room.seats.flatMap((s) => (s.playerId ? [s.playerId] : []));
+  if (!humans.every((id) => warmupDone(room, id))) return [];
+  return [sys("the wolf has heard enough. the path begins."), ...beginChapter(room, 0, now, t)];
+}
 
 function beginChapter(room: Room, n: number, now: number, t: Timing): Draft[] {
   Object.assign(room, {
@@ -228,8 +272,47 @@ export function start(room: Room, isHost: boolean, now: number, t: Timing, rng =
   return [
     sys("the friends gather at the cottage door."),
     sys("somewhere ahead, the wolf is already typing in someone else's voice."),
-    ...beginChapter(room, 0, now, t),
+    ...beginWarmup(room, now, t, rng),
   ];
+}
+
+/** A line in a player's private chat with the wolf. */
+export function warmSay(room: Room, playerId: string, raw: unknown, now: number): void {
+  if (room.phase !== "warmup") throw new GameError("The warm-up chat is over.", 409);
+  if (!room.warmup[playerId]) throw new GameError("You aren't seated in this tale.", 403);
+  const text = cleanText(raw);
+  if (!text) throw new GameError("Write something first.");
+  const lines = room.warmup[playerId];
+  if (lines.at(-1)?.from === "you") throw new GameError("Give the wolf a second to answer.", 409);
+  if (lines.filter((l) => l.from === "you").length >= WARMUP_TURNS || room.ready.includes(playerId)) {
+    throw new GameError("You've said enough. Wait for the others.", 409);
+  }
+  lines.push({ from: "you", text, at: now });
+}
+
+/** The wolf's reply. May end the warm-up when this was the last one anyone was waiting on. */
+export function warmReply(room: Room, playerId: string, text: string, now: number, t: Timing): Draft[] {
+  const lines = room.warmup[playerId];
+  if (room.phase !== "warmup" || !lines || lines.at(-1)?.from !== "you") return [];
+  lines.push({ from: "wolf", text: cleanText(text), at: now });
+  return endWarmupIfDone(room, now, t);
+}
+
+/** "I'm ready": stop chatting early, once there's enough to learn from. */
+export function warmReady(room: Room, playerId: string, now: number, t: Timing): Draft[] {
+  if (room.phase !== "warmup") throw new GameError("The warm-up chat is over.", 409);
+  const lines = room.warmup[playerId];
+  if (!lines) throw new GameError("You aren't seated in this tale.", 403);
+  if (lines.filter((l) => l.from === "you").length < WARMUP_MIN) {
+    throw new GameError(`Say at least ${WARMUP_MIN} things to the wolf first.`, 409);
+  }
+  if (!room.ready.includes(playerId)) room.ready.push(playerId);
+  return endWarmupIfDone(room, now, t);
+}
+
+/** What the humans wrote to the wolf: the raw material for how the wolf talks. */
+export function warmSamples(room: Room): string[] {
+  return Object.values(room.warmup ?? {}).flatMap((ls) => ls.filter((l) => l.from === "you").map((l) => l.text));
 }
 
 /** A message from a seat: the chapter answer while answering, plain chat while discussing. */
@@ -287,6 +370,8 @@ export function castVote(room: Room, seat: number, target: number, now: number):
 export function tick(room: Room, now: number, t: Timing): Draft[] | null {
   if (room.deadline === null || now < room.deadline) return null;
   switch (room.phase) {
+    case "warmup":
+      return [sys("the wolf has heard enough. the path begins."), ...beginChapter(room, 0, now, t)];
     case "answer":
       return beginDiscuss(room, now, t, false);
     case "discuss":
@@ -314,6 +399,8 @@ export function again(room: Room, now: number, keep: (p: Player) => boolean): Dr
     deadline: null,
     seats: [],
     wolfSeat: -1,
+    warmup: {},
+    ready: [],
     answered: [],
     onward: [],
     early: [],
@@ -402,6 +489,15 @@ export function viewFor(room: Room, playerId: string, online: Set<string>, typin
       early: room.early.includes(playerId),
       vote: seat >= 0 ? room.votes[seat] ?? null : null,
     },
+    // Only your own chat with the wolf: nobody else's is ever sent to you.
+    warm: room.phase === "warmup"
+      ? {
+        lines: (room.warmup?.[playerId] ?? []).map((l) => ({ from: l.from, text: l.text })),
+        turns: WARMUP_TURNS,
+        min: WARMUP_MIN,
+        ready: room.ready?.includes(playerId) ?? false,
+      }
+      : null,
     hostName: room.phase === "lobby" ? room.players.find((p) => p.id === host)?.name ?? null : null,
     players: room.phase === "lobby"
       ? room.players.map((p) => ({ name: p.name, online: online.has(p.id), host: p.id === host }))
@@ -431,6 +527,9 @@ export function viewFor(room: Room, playerId: string, online: Set<string>, typin
       onward: room.onward.length,
       early: room.early.length,
       answered: room.answered.length,
+      warmed: room.phase === "warmup"
+        ? room.seats.filter((st) => st.playerId && warmupDone(room, st.playerId)).length
+        : 0,
       voted: Object.keys(room.votes).length,
     },
     result: reveal ? room.result : null,
