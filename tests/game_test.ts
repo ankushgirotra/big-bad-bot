@@ -17,7 +17,7 @@ import {
   viewFor,
 } from "../server/game.ts";
 import { slugify } from "../server/store.ts";
-import { tidy } from "../server/wolf.ts";
+import { finalVote, tidy } from "../server/wolf.ts";
 
 const T = { answerMs: 60_000, discussMs: 75_000, voteMs: 45_000 };
 
@@ -177,6 +177,21 @@ Deno.test("again goes back to the cottage with a new game number", () => {
   eq([r.phase, r.game, r.seats.length, r.wolfSeat], ["lobby", 2, 0, -1]);
   eq(r.players.length, 2);
   assert(r.players.some((p) => p.id === r.hostId), "a remaining player leads the way");
+});
+
+Deno.test("the wolf's vote: tie itself out of trouble, often join a pile-on, else keep its pick", () => {
+  const r = begun(4);
+  const [a, b, c, d] = humanSeats(r);
+  // Friends are on the wolf: back their other pick to force a tie.
+  r.votes = { [a]: r.wolfSeat, [b]: r.wolfSeat, [c]: d };
+  eq(finalVote(r, a, 0.99), d);
+  // Two friends piling onto one: join them most of the time, not always.
+  r.votes = { [a]: d, [b]: d };
+  eq(finalVote(r, c, 0.1), d);
+  eq(finalVote(r, c, 0.9), c);
+  // Nothing to go on yet: keep the planned pick.
+  r.votes = {};
+  eq(finalVote(r, b, 0.1), b);
 });
 
 Deno.test("views hide real names and the wolf until the reveal", () => {
