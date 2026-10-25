@@ -1,7 +1,7 @@
 // WOLF_MODEL: which Claude model plays the wolf, and what each choice sends to the API.
 
 import { configFromEnv } from "../server/app.ts";
-import { Brain, WOLF_MODELS, wolfModel } from "../server/wolf.ts";
+import { Brain, QUESTION_TIMEOUT_MS, WOLF_MODELS, wolfModel } from "../server/wolf.ts";
 import { fakeClaude } from "./fake_claude.ts";
 
 function assert(cond: unknown, msg = "assertion failed"): asserts cond {
@@ -54,6 +54,43 @@ Deno.test({
         eq(req.fallbacks, fallback ? "default" : undefined, `${name || "(unset)"} fallbacks:`);
         eq(req.beta?.includes("server-side-fallback-2026-07-01") ?? false, fallback, `${name || "(unset)"} beta:`);
       }
+    } finally {
+      await fake.close();
+    }
+  },
+});
+
+Deno.test({
+  name: "questions: the WOLF_MODEL model writes three as structured output, told what to avoid",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const fake = fakeClaude();
+    try {
+      const brain = new Brain({ apiKey: "test", model: "sonnet", effort: "low", baseURL: fake.url });
+      const qs = await brain.questions(["what'd everyone eat today"]);
+      eq(qs, [
+        "weirdest thing in your fridge rn",
+        "last thing you bought and instantly regretted",
+        "prove you're human using only a smell. go",
+      ]);
+      const req = fake.requests.at(-1)!;
+      eq(req.model, "claude-sonnet-5-5");
+      const cfg = req.body.output_config as {
+        effort: string;
+        format: { type: string; schema: { required: string[] } };
+      };
+      eq(cfg.effort, "medium", "questions get more effort than chat lines:");
+      eq(cfg.format.type, "json_schema");
+      eq(cfg.format.schema.required, ["chapter_one", "chapter_two", "finale"]);
+      const user = (req.body.messages as { content: string }[])[0].content;
+      assert(user.includes("- what'd everyone eat today"), "the recent questions are passed along");
+      assert(String(req.body.system).includes("prove you're human. go."), "the originals are the style guide");
+
+      fake.questions = { chapter_one: "ok", chapter_two: "fine", finale: "" };
+      const err = await brain.questions([]).then(() => null, (e) => e);
+      assert(String(err?.message).includes("incomplete"), String(err));
+      assert(QUESTION_TIMEOUT_MS <= 15_000, "the host isn't kept waiting long");
     } finally {
       await fake.close();
     }

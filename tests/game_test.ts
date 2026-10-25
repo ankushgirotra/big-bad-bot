@@ -8,7 +8,9 @@ import {
   mentions,
   newPlayer,
   newRoom,
+  pickQuestions,
   proceed,
+  RECENT_QUESTIONS,
   type Room,
   say,
   seatOf,
@@ -17,6 +19,7 @@ import {
   viewFor,
 } from "../server/game.ts";
 import { slugify } from "../server/store.ts";
+import { LAST_QUESTION, QUESTION_POOL } from "../server/cast.ts";
 import { easeLaughs, finalVote, tidy } from "../server/wolf.ts";
 
 const T = { answerMs: 60_000, discussMs: 75_000, voteMs: 45_000 };
@@ -255,4 +258,29 @@ Deno.test("slugify and tidy", () => {
   eq(slugify("  --Café  Nuit-- "), "cafe-nuit");
   eq(tidy('"Dev: BRO I had tacos — like four"', "Dev"), "BRO I had tacos, like four");
   eq(tidy("maya (you): lol", "maya"), "lol");
+});
+
+Deno.test("start takes the model's questions when it wrote three, and remembers them", () => {
+  const r = room(2);
+  start(r, true, 0, T, rng(), ["a", "b", "c"]);
+  eq(r.questions, ["a", "b", "c"]);
+  eq(r.recentQuestions, ["a", "b", "c"]);
+  const r2 = room(2);
+  start(r2, true, 0, T, rng(), ["only one"]);
+  assert(QUESTION_POOL.includes(r2.questions[0]) && r2.questions[2] === LAST_QUESTION, "a short list falls back");
+});
+
+Deno.test("the fixed list skips questions the server already had, and memory is capped", () => {
+  const recent = QUESTION_POOL.slice(0, QUESTION_POOL.length - 2);
+  for (let seed = 1; seed < 20; seed++) {
+    const qs = pickQuestions(recent, rng(seed));
+    assert(qs.slice(0, 2).every((q) => !recent.includes(q)), JSON.stringify(qs));
+  }
+  const all = pickQuestions(QUESTION_POOL, rng());
+  assert(all.slice(0, 2).every((q) => QUESTION_POOL.includes(q)), "everything used: start over");
+  const r = room(2);
+  r.recentQuestions = Array.from({ length: RECENT_QUESTIONS }, (_, i) => `old ${i}`);
+  start(r, true, 0, T, rng(), ["x", "y", "z"]);
+  eq(r.recentQuestions!.length, RECENT_QUESTIONS);
+  eq(r.recentQuestions!.slice(-3), ["x", "y", "z"]);
 });

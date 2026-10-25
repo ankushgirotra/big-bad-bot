@@ -88,6 +88,20 @@ next move goes through.
 The wolf waits and types like a person: it answers mid-pack, replies when someone names it, sometimes jumps into the
 discussion, and votes with the crowd. `WOLF_PACE=0.2` speeds it up for testing.
 
+## The questions
+
+When the host leads the way into the woods, the same model that plays the wolf (`WOLF_MODEL`) writes that tale's three
+questions: two everyday warm-ups ("name the cursed item in your junk drawer") and a finale that dares everyone to prove
+they're human with a twist ("prove you're human without typing the letter e. go"). The prompt in `server/wolf.ts` hands
+it the original list in `server/cast.ts` as the style guide, and the questions come back as structured output (exactly
+three, in chapter order).
+
+Each server remembers its last 30 questions, and the model is told not to repeat or echo them, so a group playing tale
+after tale keeps getting new ones. It's one call per tale, at medium effort: about 4–6s on Haiku, while the host's
+button reads _Writing the path…_. If the model fails or takes longer than 12s, the tale starts anyway with the fixed
+list (skipping questions this server has had), and the server logs why. No call is made unless the tale can actually
+start.
+
 ## Data: the shared `global-kv`
 
 All state lives in Deno KV. The `global-kv` database is shared with other projects, so every key this app writes starts

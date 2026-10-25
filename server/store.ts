@@ -36,6 +36,12 @@ import {
 
 const TTL = 6 * 60 * 60_000;
 const ONLINE_MS = 45_000;
+
+/**
+ * Still at the cottage: connected, or joined so recently that their page hasn't connected
+ * yet. Without the second half, two friends joining at the same moment could drop the first.
+ */
+const present = (p: Player, online: Set<string>, now: number) => online.has(p.id) || now - p.joinedAt < ONLINE_MS;
 const TYPING_MS = 6_000;
 const LISTED_MS = 2 * 60 * 60_000;
 
@@ -57,6 +63,9 @@ export interface ServerInfo {
 }
 
 type Mutation = { room: Room; drafts: Draft[] } | null;
+
+/** Given the questions a server has already had, three new ones in chapter order. */
+export type QuestionWriter = (recent: string[]) => Promise<string[]>;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -81,7 +90,16 @@ function nextId(now: number): string {
 
 export class Store {
   /** wolfProblem: why Claude can't play on this server at all (no tale starts then), or null. */
-  constructor(readonly kv: Deno.Kv, readonly timing: Timing, readonly wolfProblem: string | null = null) {}
+  constructor(
+    readonly kv: Deno.Kv,
+    readonly timing: Timing,
+    readonly wolfProblem: string | null = null,
+    /** Writes a new tale's three questions (the wolf's model); null uses the fixed list. */
+    readonly writeQuestions: QuestionWriter | null = null,
+  ) {}
+
+  /** Servers whose host is starting a tale right now (the questions are being written). */
+  #starting = new Set<string>();
 
   async room(slug: string): Promise<Room | null> {
     return (await this.kv.get<Room>(keys.room(slug))).value;
@@ -226,7 +244,7 @@ export class Store {
           409,
         );
       }
-      room.players = room.players.filter((p) => online.has(p.id));
+      room.players = room.players.filter((p) => present(p, online, now));
       if (room.players.length >= MAX_PLAYERS) {
         throw new GameError(`This cottage is full (${MAX_PLAYERS} friends at most).`, 409);
       }
@@ -257,6 +275,7 @@ export class Store {
 
     const online = await this.online(slug);
     online.add(player.id);
+    if (type === "start") return await this.#start(slug, room, player.id, online);
     await this.mutate(slug, (room, now) => {
       const me = room?.players.find((p) => p.id === player.id);
       if (!room || !me) throw new GameError("You aren't part of this tale. Join from the front page.", 401);
@@ -266,11 +285,6 @@ export class Store {
       const t = this.timing;
       let drafts: Draft[];
       switch (type) {
-        case "start":
-          if (this.wolfProblem) throw new GameError(`The wolf can't play. ${this.wolfProblem}`, 503);
-          room.players = room.players.filter((p) => online.has(p.id));
-          drafts = start(room, isHost, now, t);
-          break;
         case "say":
           drafts = say(room, seat, body.text, now, t);
           break;
@@ -282,7 +296,7 @@ export class Store {
           drafts = castVote(room, seat, Number(body.target), now);
           break;
         case "again":
-          drafts = again(room, now, (p) => online.has(p.id));
+          drafts = again(room, now, (p) => present(p, online, now));
           break;
         default:
           throw new GameError(`Unknown action "${type}".`);
@@ -293,6 +307,41 @@ export class Store {
     if (type === "say") {
       const seat = seatOf(room, player.id);
       if (seat >= 0) await this.kv.delete([...keys.typing(slug), seat]);
+    }
+  }
+
+  /**
+   * The host leads the way into the woods: the wolf's model writes this tale's questions
+   * first (the fixed list stands in if it can't), then the tale starts.
+   */
+  async #start(slug: string, room: Room, playerId: string, online: Set<string>): Promise<void> {
+    if (this.wolfProblem) throw new GameError(`The wolf can't play. ${this.wolfProblem}`, 503);
+    // Find out whether the tale can start before paying for questions: start() throws the
+    // same errors here as in the commit below.
+    const isHost = hostOf(room, online) === playerId;
+    const here = (r: Room, now = Date.now()) =>
+      Object.assign(r, { players: r.players.filter((p) => present(p, online, now)) });
+    start(here(structuredClone(room)), isHost, Date.now(), this.timing);
+    if (this.#starting.has(slug)) throw new GameError("The tale is already starting.", 409);
+    this.#starting.add(slug);
+    try {
+      let questions: string[] | undefined;
+      if (this.writeQuestions) {
+        try {
+          questions = await this.writeQuestions(room.recentQuestions ?? []);
+        } catch (err) {
+          const why = err instanceof Error ? err.message : String(err);
+          console.warn(`[questions ${slug}] using the fixed list; the model couldn't write them: ${why}`);
+        }
+      }
+      await this.mutate(slug, (room, now) => {
+        const me = room?.players.find((p) => p.id === playerId);
+        if (!room || !me) throw new GameError("You aren't part of this tale. Join from the front page.", 401);
+        const isHost = hostOf(room, online) === me.id;
+        return { room, drafts: start(here(room), isHost, now, this.timing, Math.random, questions) };
+      });
+    } finally {
+      this.#starting.delete(slug);
     }
   }
 

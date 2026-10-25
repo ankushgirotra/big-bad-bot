@@ -8,6 +8,7 @@
 //         process per room holds a short KV lease and drives the wolf.
 
 import Anthropic from "@anthropic-ai/sdk";
+import { LAST_QUESTION, QUESTION_POOL } from "./cast.ts";
 import { castOf, cleanText, mentions, type Msg, type Room } from "./game.ts";
 import { keys, type Store } from "./store.ts";
 
@@ -30,6 +31,33 @@ export function wolfModel(raw: string | undefined): WolfModel | null {
 
 /** Sonnet and Opus can decline at their safety checks; this beta reruns a declined line on another model. */
 const FALLBACK_BETA = "server-side-fallback-2026-07-01";
+
+/** The host is waiting on these when they start the tale; past this, the fixed list is used. */
+export const QUESTION_TIMEOUT_MS = 12_000;
+
+const QUESTION_PROMPT = [
+  `You write the chapter questions for Big Bad Bot, a party game played in a group chat. Friends hide behind storybook names, and one extra seat is secretly an AI trying to pass as one of them. Each tale has three chapters: everyone answers the chapter's question in the chat, the group picks the answers apart, and at the end they vote on who the AI is.`,
+  `So a good question is one where real people's answers come out specific, a little messy and personal, and an AI has to invent a life to keep up: what someone ate today, what's on their lock screen, the last thing they lied about. Anyone can answer it in one quick line from their own day, week or life, and the answers are fun to read side by side. Never invasive: nothing about trauma, health, money, politics, religion, sex or relationships, or anything you wouldn't ask a group of acquaintances.`,
+  `Write them the way the host would text them to the group: all lowercase, short (about 3 to 9 words), no question mark, casual. Vary how they open, like the originals do, rather than starting each one with "what's". Use "rn" only when the question really is about right now.`,
+  `Players can only type text: no photos, voice notes or links.`,
+  `Chapters one and two are warm-ups about everyday life. The finale openly dares everyone to prove they're human, or that they're not the bot, like the original "${LAST_QUESTION}", with a fresh twist on how: a limit, a format, or a kind of proof only a person would have. It names being human (or the bot) outright and ends in ". go", for example "prove you're human in five words. go" or "convince us you're not the bot, no emojis allowed. go".`,
+  `The originals, for style:\n${[...QUESTION_POOL, LAST_QUESTION].map((q) => `- ${q}`).join("\n")}`,
+].join("\n\n");
+
+/** Structured output: exactly three strings, in chapter order. */
+const QUESTION_FORMAT: Anthropic.Beta.BetaJSONOutputFormat = {
+  type: "json_schema",
+  schema: {
+    type: "object",
+    properties: {
+      chapter_one: { type: "string" },
+      chapter_two: { type: "string" },
+      finale: { type: "string" },
+    },
+    required: ["chapter_one", "chapter_two", "finale"],
+    additionalProperties: false,
+  },
+};
 
 export interface ClaudeConfig {
   apiKey: string;
@@ -207,6 +235,37 @@ export class Brain {
     return out;
   }
 
+  /**
+   * Three new chapter questions for a tale, in the spirit of the originals, from the same
+   * model that plays the wolf. `recent` are the questions this server has already had.
+   * Throws when the model can't write them; the caller falls back to the fixed list.
+   */
+  async questions(recent: string[]): Promise<string[]> {
+    const ask = recent.length
+      ? `Write the three questions for a new tale. Make them fresh: don't reuse the originals, and don't reuse or closely echo any question this group has already answered:\n${
+        recent.map((q) => `- ${q}`).join("\n")
+      }`
+      : "Write the three questions for a new tale. Make them fresh: don't reuse the originals.";
+    // One call per tale, and the rules matter more than speed here: a little more effort than chat lines.
+    const raw = await this.complete(QUESTION_PROMPT, ask, {
+      format: QUESTION_FORMAT,
+      timeoutMs: QUESTION_TIMEOUT_MS,
+      effort: "medium",
+    });
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new Error(`Claude's questions weren't JSON: ${JSON.stringify(raw.slice(0, 80))}`);
+    }
+    // The originals never end in a question mark; keep the new ones the same.
+    const out = ["chapter_one", "chapter_two", "finale"].map((k) => cleanText(parsed[k], 90).replace(/\s*\?+$/, ""));
+    if (out.some((q) => q.length < 6)) {
+      throw new Error(`Claude's questions came back incomplete: ${JSON.stringify(out)}`);
+    }
+    return out;
+  }
+
   async vote(room: Room, msgs: Msg[]): Promise<number> {
     const choices = room.seats.map((_, i) => i).filter((i) => i !== room.wolfSeat);
     const out = await this.complete(
@@ -223,26 +282,35 @@ export class Brain {
   }
 
   /** One Messages API call to the chosen Claude model. Throws a readable error on failure. */
-  async complete(system: string, user: string): Promise<string> {
+  async complete(
+    system: string,
+    user: string,
+    opts: { format?: Anthropic.Beta.BetaJSONOutputFormat; timeoutMs?: number; effort?: ClaudeConfig["effort"] } = {},
+  ): Promise<string> {
     const problem = this.problem;
     if (problem) throw new Error(problem);
     // Haiku has no server-side fallback; Sonnet and Opus rerun a declined line on the model
     // Anthropic recommends for that kind of decline.
     const fallback = this.#choice !== "haiku";
+    const timeoutMs = opts.timeoutMs ?? this.#timeoutMs;
     let res: Anthropic.Beta.BetaMessage;
     try {
-      res = await this.#client.beta.messages.create({
-        model: this.model,
-        // These models think before they answer (adaptive, on by default); leave room for
-        // that plus a one-line reply.
-        max_tokens: 4096,
-        output_config: { effort: this.cfg.effort },
-        system,
-        messages: [{ role: "user", content: user }],
-        ...(fallback ? { betas: [FALLBACK_BETA], fallbacks: "default" as const } : {}),
-      });
+      res = await this.#client.beta.messages.create(
+        {
+          model: this.model,
+          // These models think before they answer (adaptive, on by default); leave room for
+          // that plus a one-line reply.
+          max_tokens: 4096,
+          output_config: { effort: opts.effort ?? this.cfg.effort, ...(opts.format ? { format: opts.format } : {}) },
+          system,
+          messages: [{ role: "user", content: user }],
+          ...(fallback ? { betas: [FALLBACK_BETA], fallbacks: "default" as const } : {}),
+        },
+        // A caller with its own deadline gets one try within it, not the client's retry.
+        opts.timeoutMs ? { timeout: timeoutMs, maxRetries: 0 } : undefined,
+      );
     } catch (err) {
-      throw new Error(explain(err, this.#timeoutMs));
+      throw new Error(explain(err, timeoutMs));
     }
     // "refusal" here means the fallback declined too (or there was none, on Haiku).
     if (res.stop_reason === "refusal") {

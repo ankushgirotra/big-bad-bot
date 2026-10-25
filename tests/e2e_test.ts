@@ -7,6 +7,7 @@ import { castOf, type Msg, type View } from "../server/game.ts";
 import { NS } from "../server/kv.ts";
 import { fakeClaude } from "./fake_claude.ts";
 import { WOLF_MODELS } from "../server/wolf.ts";
+import { QUESTION_POOL } from "../server/cast.ts";
 
 function assert(cond: unknown, msg = "assertion failed"): asserts cond {
   if (!cond) throw new Error(msg);
@@ -128,6 +129,10 @@ Deno.test({
       assert((await act(bea, "start")).status === 403, "only the host starts");
       assert((await act(host, "start")).status === 200);
       for (const c of clients) await c.until("chapter one", (v) => v.phase === "answer" && v.chapter === 0);
+      // The wolf's model wrote this tale's questions (question marks dropped, like the originals).
+      assert(host.view!.question === "weirdest thing in your fridge rn", `chapter one: ${host.view!.question}`);
+      const asked = claude.requests.find((r) => r.body.output_config);
+      assert(asked?.model === WOLF_MODELS.haiku.id, "questions come from the wolf's model");
 
       const late = await post("/api/join", { server: "grandmas-house", name: "Dee" });
       assert(late.status === 409, "no joining mid-tale");
@@ -170,6 +175,10 @@ Deno.test({
           for (const c of clients) await c.until(`chapter ${ch + 1}`, (v) => v.chapter === ch + 1);
         }
       }
+
+      // (re-read: the stream has moved on since the chapter-one check above)
+      const finale = host.view!.question as string | null;
+      assert(finale === "prove you're human using only a smell. go", `finale: ${finale}`);
 
       // ---- knock on grandma's door (a majority of two)
       await act(bea, "early");
@@ -273,12 +282,13 @@ Deno.test({
   async fn() {
     await twoFriends("test", async ({ host, guest, claude, act }) => {
       claude.failing = true;
-      assert((await act(host, "start")).status === 200);
+      assert((await act(host, "start")).status === 200, "a model that can't write questions doesn't stop the tale");
       for (const c of [host, guest]) {
         const v = await c.until("the wolf's error", (v) => v.phase === "answer" && v.wolfError !== null);
         assert(v.wolfError!.includes("HTTP 529") && v.wolfError!.includes("Overloaded"), v.wolfError!);
       }
       assert(!host.log.some((m) => m.kind === "answer"), "nothing stands in for the wolf's answer");
+      assert(QUESTION_POOL.includes(host.view!.question ?? ""), `fixed-list question: ${host.view?.question}`);
 
       claude.failing = false;
       for (const c of [host, guest]) await act(c, "say", { text: `${c.name} answer` });

@@ -215,7 +215,16 @@ function barFor(v) {
         sig: `lobby|${y.host}|${enough}|${v.hostName}`,
         html: `<div class="sys">${note}</div><div class="row">${y.host ? `<button class="btn" id="go" ${enough ? '' : 'disabled'}>Into the woods</button>` : ''}<button class="btn ghost" id="leave">Leave the cottage</button></div>`,
         bind() {
-          $('go') && ($('go').onclick = () => act('start'));
+          // Starting waits on the wolf's model writing this tale's questions (a few seconds).
+          $('go') && ($('go').onclick = async () => {
+            const go = $('go');
+            go.disabled = true;
+            go.textContent = 'Writing the path…';
+            if (!(await act('start'))) {
+              go.disabled = false;
+              go.textContent = 'Into the woods';
+            }
+          });
           $('leave').onclick = async () => {
             await act('leave');
             location.href = '/';
