@@ -7,15 +7,18 @@ export interface FakeClaude {
   calls: number;
   /** The model each call asked for. */
   models: string[];
+  /** What each call asked for: model, fallbacks, and the anthropic-beta header. */
+  requests: { model: string; fallbacks?: unknown; beta: string | null }[];
   close(): Promise<void>;
 }
 
 export function fakeClaude(): FakeClaude {
-  const fake = { failing: false, calls: 0, models: [] } as unknown as FakeClaude;
+  const fake = { failing: false, calls: 0, models: [], requests: [] } as unknown as FakeClaude;
   const server = Deno.serve({ port: 0, hostname: "127.0.0.1", onListen() {} }, async (req) => {
     fake.calls++;
     const body = await req.json();
     fake.models.push(body.model);
+    fake.requests.push({ model: body.model, fallbacks: body.fallbacks, beta: req.headers.get("anthropic-beta") });
     if (fake.failing) {
       return Response.json(
         { type: "error", error: { type: "overloaded_error", message: "Overloaded" } },

@@ -6,7 +6,7 @@ import { startServer } from "../server/app.ts";
 import { castOf, type Msg, type View } from "../server/game.ts";
 import { NS } from "../server/kv.ts";
 import { fakeClaude } from "./fake_claude.ts";
-import { WOLF_MODEL } from "../server/wolf.ts";
+import { WOLF_MODELS } from "../server/wolf.ts";
 
 function assert(cond: unknown, msg = "assertion failed"): asserts cond {
   if (!cond) throw new Error(msg);
@@ -84,7 +84,7 @@ Deno.test({
       hostname: "127.0.0.1",
       timing: { answerMs: 6_000, discussMs: 6_000, voteMs: 6_000 },
       wolfPace: 0.02,
-      claude: { apiKey: "test", baseURL: claude.url, effort: "low" },
+      claude: { apiKey: "test", model: "", baseURL: claude.url, effort: "low" },
       kv,
       quiet: true,
     });
@@ -198,8 +198,8 @@ Deno.test({
       }
       assert((await kv.get(["some-other-project", "hello"])).value === "world");
 
-      // ---- the wolf only ever asked for Haiku
-      assert(claude.calls > 0 && claude.models.every((m) => m === WOLF_MODEL), `models: ${claude.models}`);
+      // ---- with WOLF_MODEL unset, the wolf only ever asked for Haiku
+      assert(claude.calls > 0 && claude.models.every((m) => m === WOLF_MODELS.haiku.id), `models: ${claude.models}`);
     } finally {
       for (const c of clients) c.close();
       await app.close();
@@ -232,7 +232,7 @@ async function twoFriends(
     hostname: "127.0.0.1",
     timing: { answerMs: 20_000, discussMs: 20_000, voteMs: 20_000 },
     wolfPace: 0.02,
-    claude: { apiKey, baseURL: claude.url, effort: "low" },
+    claude: { apiKey, model: "", baseURL: claude.url, effort: "low" },
     kv,
     quiet: true,
   });

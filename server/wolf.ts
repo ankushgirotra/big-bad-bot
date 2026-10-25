@@ -1,7 +1,8 @@
 // The wolf: a Claude agent sitting in one seat, pretending to be a friend.
 //
-// Brain   writes the wolf's lines and picks its vote, always with Claude Haiku. There is
-//         no stand-in: when Claude can't play, the Brain throws and the room shows why.
+// Brain   writes the wolf's lines and picks its vote with Claude: Haiku, unless the
+//         WOLF_MODEL env var picks Sonnet or Opus. There is no stand-in: when Claude
+//         can't play, the Brain throws and the room shows why.
 // Driver  decides when the wolf speaks and votes. It reacts to the room's state
 //         rather than to requests, so any server process can pick it up: one
 //         process per room holds a short KV lease and drives the wolf.
@@ -10,12 +11,31 @@ import Anthropic from "@anthropic-ai/sdk";
 import { castOf, cleanText, mentions, type Msg, type Room } from "./game.ts";
 import { keys, type Store } from "./store.ts";
 
-/** The only model the wolf uses: it runs on a personal account, so it stays on Haiku. */
-export const WOLF_MODEL = "claude-haiku-5-5";
+/**
+ * The models WOLF_MODEL can pick, by name. Haiku is the default because the key bills a
+ * personal account. Bigger models get longer to answer before the wolf gives up on a move.
+ */
+export const WOLF_MODELS = {
+  haiku: { id: "claude-haiku-5-5", timeoutMs: 15_000 },
+  sonnet: { id: "claude-sonnet-5-5", timeoutMs: 20_000 },
+  opus: { id: "claude-opus-5-5", timeoutMs: 25_000 },
+} as const;
+export type WolfModel = keyof typeof WOLF_MODELS;
+
+/** " Opus" -> "opus", unset or empty -> "haiku", anything else -> null. */
+export function wolfModel(raw: string | undefined): WolfModel | null {
+  const name = (raw ?? "").trim().toLowerCase() || "haiku";
+  return Object.hasOwn(WOLF_MODELS, name) ? name as WolfModel : null;
+}
+
+/** Sonnet and Opus can decline at their safety checks; this beta reruns a declined line on another model. */
+const FALLBACK_BETA = "server-side-fallback-2026-07-01";
 
 export interface ClaudeConfig {
   apiKey: string;
-  /** "low" keeps lines quick; Haiku 5.5 would default to "medium". */
+  /** The WOLF_MODEL env var: "haiku" (the default), "sonnet" or "opus". */
+  model: string;
+  /** "low" keeps lines quick on every model. */
   effort: "low" | "medium" | "high";
   /** Only tests point this elsewhere (a fake Messages API). */
   baseURL?: string;
@@ -132,21 +152,30 @@ export function finalVote(room: Room, planned: number, roll = Math.random()): nu
   return planned;
 }
 
-const CLAUDE_TIMEOUT_MS = 15_000;
-
 export class Brain {
   readonly #client: Anthropic;
+  readonly #choice: WolfModel | null;
 
   constructor(readonly cfg: ClaudeConfig) {
+    this.#choice = wolfModel(cfg.model);
     this.#client = new Anthropic({
       apiKey: cfg.apiKey,
       // Only the key from server/keys.ts: never a token or base URL that happens to be in the environment.
       authToken: null,
       baseURL: cfg.baseURL ?? "https://api.anthropic.com",
-      timeout: CLAUDE_TIMEOUT_MS,
+      timeout: this.#timeoutMs,
       // The SDK retries 429s, 5xx and dropped connections itself; once is enough for a live game.
       maxRetries: 1,
     });
+  }
+
+  get #timeoutMs(): number {
+    return WOLF_MODELS[this.#choice ?? "haiku"].timeoutMs;
+  }
+
+  /** The model the wolf calls, e.g. "claude-haiku-5-5". */
+  get model(): string {
+    return WOLF_MODELS[this.#choice ?? "haiku"].id;
   }
 
   get live(): boolean {
@@ -155,11 +184,12 @@ export class Brain {
 
   /** Why Claude can't play at all on this server, or null when it can. */
   get problem(): string | null {
+    if (!this.#choice) return `WOLF_MODEL is "${this.cfg.model}": set it to haiku, sonnet or opus.`;
     return this.live ? null : "Claude isn't connected: there's no Anthropic API key in server/keys.ts.";
   }
 
   get label(): string {
-    return this.problem ?? `${WOLF_MODEL} (effort ${this.cfg.effort})`;
+    return this.problem ?? `${this.model} (WOLF_MODEL=${this.#choice}, effort ${this.cfg.effort})`;
   }
 
   async line(room: Room, msgs: Msg[], task: Task): Promise<string> {
@@ -192,24 +222,29 @@ export class Brain {
     return choice;
   }
 
-  /** One Messages API call to Claude Haiku. Throws a readable error on failure. */
+  /** One Messages API call to the chosen Claude model. Throws a readable error on failure. */
   async complete(system: string, user: string): Promise<string> {
     const problem = this.problem;
     if (problem) throw new Error(problem);
-    let res: Anthropic.Message;
+    // Haiku has no server-side fallback; Sonnet and Opus rerun a declined line on the model
+    // Anthropic recommends for that kind of decline.
+    const fallback = this.#choice !== "haiku";
+    let res: Anthropic.Beta.BetaMessage;
     try {
-      res = await this.#client.messages.create({
-        model: WOLF_MODEL,
-        // Haiku 5.5 thinks before it answers (adaptive, on by default); leave room for that
-        // plus a one-line reply.
+      res = await this.#client.beta.messages.create({
+        model: this.model,
+        // These models think before they answer (adaptive, on by default); leave room for
+        // that plus a one-line reply.
         max_tokens: 4096,
         output_config: { effort: this.cfg.effort },
         system,
         messages: [{ role: "user", content: user }],
+        ...(fallback ? { betas: [FALLBACK_BETA], fallbacks: "default" as const } : {}),
       });
     } catch (err) {
-      throw new Error(explain(err));
+      throw new Error(explain(err, this.#timeoutMs));
     }
+    // "refusal" here means the fallback declined too (or there was none, on Haiku).
     if (res.stop_reason === "refusal") {
       throw new Error(`Claude declined to write the wolf's line (${res.stop_details?.category ?? "refusal"}).`);
     }
@@ -221,7 +256,7 @@ export class Brain {
 }
 
 /** Turn an SDK error into one sentence the players can read. */
-function explain(err: unknown): string {
+function explain(err: unknown, timeoutMs: number): string {
   const detail = (e: InstanceType<typeof Anthropic.APIError>) => {
     const body = e.error as { error?: { message?: string } } | undefined;
     return body?.error?.message ?? e.message;
@@ -232,7 +267,7 @@ function explain(err: unknown): string {
   if (err instanceof Anthropic.PermissionDeniedError) return `Claude refused the API key (HTTP 403): ${detail(err)}`;
   if (err instanceof Anthropic.RateLimitError) return `Claude is rate-limiting this key (HTTP 429): ${detail(err)}`;
   if (err instanceof Anthropic.APIConnectionTimeoutError) {
-    return `Claude didn't answer within ${CLAUDE_TIMEOUT_MS / 1000}s.`;
+    return `Claude didn't answer within ${timeoutMs / 1000}s.`;
   }
   if (err instanceof Anthropic.APIConnectionError) return `Couldn't reach Claude: ${err.message}`;
   if (err instanceof Anthropic.APIError) return `Claude answered HTTP ${err.status}: ${detail(err)}`;

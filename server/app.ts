@@ -35,7 +35,8 @@ export function configFromEnv(env: Pick<Deno.Env, "get"> = Deno.env): Config {
     },
     wolfPace: num("WOLF_PACE", 1),
     // The key comes only from server/keys.ts, so a key in someone's shell never bills another account.
-    claude: { apiKey: KEYS.anthropic.trim(), effort: "low" },
+    // WOLF_MODEL picks haiku (the default), sonnet or opus.
+    claude: { apiKey: KEYS.anthropic.trim(), model: env.get("WOLF_MODEL") ?? "", effort: "low" },
   };
 }
 

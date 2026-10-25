@@ -43,25 +43,47 @@ deno task dev
 
 Either way, open http://localhost:8000. Friends on the same Wi-Fi can join at `http://<your-ip>:8000`.
 
-| Task                    | What it does                                                  |
-| ----------------------- | ------------------------------------------------------------- |
-| `deno task dev`         | Run with reload on save                                       |
-| `deno task start`       | Run                                                           |
-| `deno task test`        | Rule unit tests, plus a whole tale over HTTP + SSE            |
-| `deno task test:claude` | Ask the real Claude wolf for a few lines (spends a few cents) |
-| `deno task check`       | Type-check, lint, format check                                |
+| Task                    | What it does                                                                               |
+| ----------------------- | ------------------------------------------------------------------------------------------ |
+| `deno task dev`         | Run with reload on save                                                                    |
+| `deno task start`       | Run                                                                                        |
+| `deno task test`        | Rule unit tests, plus a whole tale over HTTP + SSE                                         |
+| `deno task test:claude` | Ask the real Claude wolf (`WOLF_MODEL`'s pick) for a few lines; spends a few cents at most |
+| `deno task check`       | Type-check, lint, format check                                                             |
 
 ## The wolf
 
-The wolf is always Claude Haiku (`claude-haiku-5-5`, hardcoded in `server/wolf.ts` as `WOLF_MODEL`; nothing else is ever
-called, because the key bills a personal account). It goes through the official Anthropic SDK (`npm:@anthropic-ai/sdk`)
-with `effort: low`. The key is `KEYS.anthropic` in `server/keys.ts`; environment variables such as `ANTHROPIC_API_KEY`
-are deliberately ignored, so a key in someone's shell never bills a different account.
+The wolf is Claude, through the official Anthropic SDK (`npm:@anthropic-ai/sdk`) with `effort: low`. The `WOLF_MODEL`
+environment variable picks the model:
+
+| `WOLF_MODEL`      | Model               | Price per million tokens (in / out) | Gives up on a move after |
+| ----------------- | ------------------- | ----------------------------------- | ------------------------ |
+| unset, or `haiku` | `claude-haiku-5-5`  | $0.10 / $0.50                       | 15s                      |
+| `sonnet`          | `claude-sonnet-5-5` | $2 / $10                            | 20s                      |
+| `opus`            | `claude-opus-5-5`   | $4 / $20                            | 25s                      |
+
+The key bills a personal account, so Haiku is the default, and Sonnet and Opus run only when you ask for them. Case and
+spaces don't matter; any other value stops the wolf with a red error on both pages rather than quietly picking a model.
+Sonnet and Opus can decline a request at their safety checks, so their requests opt into `fallbacks: "default"`, which
+reruns a declined line on the model Anthropic recommends for that kind of decline. Haiku has no such fallback.
+
+Set it like any other environment variable:
+
+```bash
+WOLF_MODEL=opus deno task dev
+./run_podman_container.sh bash -c 'cd big-bad-bot && WOLF_MODEL=sonnet deno task dev'
+```
+
+On Deno Deploy, add `WOLF_MODEL` under the app's Settings → Environment variables (leaving it out means Haiku).
+`/api/health` and the startup log show which model is playing.
+
+The key is `KEYS.anthropic` in `server/keys.ts`; environment variables such as `ANTHROPIC_API_KEY` are deliberately
+ignored, so a key in someone's shell never bills a different account.
 
 There are no canned lines to fall back on. Without a key, both pages show a red error and no tale can start
-(`/api/health` answers 503). If a call fails (after the SDK's one retry for 429/5xx/dropped connections, or after 15s
-with no answer), the wolf makes no move, and every player sees a red banner with the reason until the wolf's next move
-goes through.
+(`/api/health` answers 503). If a call fails (after the SDK's one retry for 429/5xx/dropped connections, or after the
+time above with no answer), the wolf makes no move, and every player sees a red banner with the reason until the wolf's
+next move goes through.
 
 The wolf waits and types like a person: it answers mid-pack, replies when someone names it, sometimes jumps into the
 discussion, and votes with the crowd. `WOLF_PACE=0.2` speeds it up for testing.
