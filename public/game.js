@@ -71,7 +71,7 @@ function addMsg(m) {
 // ---- the left page --------------------------------------------------------------
 
 function renderTale() {
-  const wolf = V.ai === 'muse' ? 'a <b>Muse Spark</b> agent' : 'a <b>scripted</b> wolf (this server has no Muse key)';
+  const wolf = 'a <b>Muse Spark</b> agent';
   let html;
   if (mySeat() < 0) {
     html = `Once upon a time, a few friends shared a group chat. Each of you is <b>Red</b>, and when the tale begins each of you hides behind a storybook name. But the wolf slips in first: ${wolf} that reads every message and wears a friend's voice like a borrowed nightgown. Answer three questions on the path, question anyone who seems off, then name the wolf.`;
@@ -80,6 +80,15 @@ function renderTale() {
     html = `Once upon a time, ${NUM[V.seats.length - 1]} friends shared a group chat. You are <b>Red</b>, though the others know you as <b>${esc(me.name)}, ${esc(me.role)}</b>, who writes in ${esc(me.voice)}. But the wolf reached grandma's house first: ${wolf} that read every message and now wears one friend's name like a borrowed nightgown. Answer three questions on the path, question anyone who seems off, then name the wolf.`;
   }
   if (html !== taleHtml) $('tale').innerHTML = taleHtml = html;
+}
+
+// Muse Spark couldn't play the wolf's last move (or isn't connected at all). Never hidden or softened:
+// a wolf that's broken must not pass for a wolf that's being quiet.
+function renderWolfError() {
+  const e = $('wolfErr');
+  e.hidden = !V.wolfError;
+  const html = V.wolfError ? `<b>The wolf (Muse Spark) failed</b>${esc(V.wolfError)}` : '';
+  if (e.innerHTML !== html) e.innerHTML = html;
 }
 
 function stopIndex() {
@@ -340,7 +349,7 @@ function renderEnd() {
   d.className = 'end';
   d.innerHTML = `${$('howl').outerHTML.replace('id="howl"', '').replace(/class="howl[^"]*"/, '')}
     <h3>${title}</h3>
-    <p>${V.ai === 'muse' ? 'Muse Spark' : 'The scripted wolf'} wore ${esc(w.name)}'s voice (${esc(w.voice)}). Its messages now glow gold above.</p>
+    <p>Muse Spark wore ${esc(w.name)}'s voice (${esc(w.voice)}). Its messages now glow gold above.</p>
     <ul>${r.tells.map((t) => `<li>${esc(t)}</li>`).join('')}${votes ? `<li>The votes: ${votes}.</li>` : '<li>Nobody voted before the candle went out.</li>'}</ul>
     <span class="fin">${r.humansWin ? 'Happily Ever After' : 'The End'}</span>`;
   $('log').append(d);
@@ -348,6 +357,7 @@ function renderEnd() {
 }
 
 function render() {
+  renderWolfError();
   renderTale();
   renderPath();
   renderCast();

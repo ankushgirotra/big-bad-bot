@@ -81,7 +81,7 @@ export async function startServer(cfg: Config) {
   const opened = cfg.kv ? { kv: cfg.kv, where: "provided" } : await openGlobalKv();
   const kv = opened.kv;
   const brain = new Brain(cfg.muse);
-  const store = new Store(kv, cfg.timing, brain.live ? "muse" : "scripted");
+  const store = new Store(kv, cfg.timing, brain.problem);
   const pack = new WolfPack(store, brain, cfg.wolfPace);
   const streams = new Set<() => void>();
 
@@ -131,7 +131,10 @@ export async function startServer(cfg: Config) {
       if (msgs.length) cursor = msgs[msgs.length - 1].id;
       const [online, typing] = await Promise.all([store.online(slug), store.typingSeats(slug)]);
       online.add(player.id);
-      send("view", { view: viewFor(room, me.id, online, typing, Date.now()), msgs, reset });
+      const view = viewFor(room, me.id, online, typing, Date.now());
+      // A server without Muse can't play the wolf at all; say so on every page, not just at the start.
+      view.wolfError ??= brain.problem;
+      send("view", { view, msgs, reset });
       // Whoever is connected when a candle burns out moves the tale on (it's idempotent).
       clearTimeout(tickTimer);
       if (room.deadline !== null) {
@@ -199,8 +202,10 @@ export async function startServer(cfg: Config) {
         if (path === "/") return file("index.html");
         if (path === "/game") return file("game.html");
         if (/^\/[a-z0-9-]+\.(css|js|svg)$/.test(path)) return file(path.slice(1));
-        if (path === "/api/health") return json({ ok: true, kv: opened.where, wolf: brain.label });
-        if (path === "/api/servers") return json({ servers: await store.servers(), cast: CAST, wolf: store.ai });
+        if (path === "/api/health") {
+          return json({ ok: !brain.problem, kv: opened.where, wolf: brain.label }, brain.problem ? 503 : 200);
+        }
+        if (path === "/api/servers") return json({ servers: await store.servers(), cast: CAST, wolfError: brain.problem });
         if (path === "/api/events") {
           return await events(slugify(url.searchParams.get("server")), url.searchParams.get("token"));
         }
@@ -231,7 +236,8 @@ export async function startServer(cfg: Config) {
       if (cfg.quiet) return;
       console.log(`Big Bad Bot is listening on http://localhost:${port}`);
       console.log(`  kv:   ${opened.where} (keys under ["big-bad-bot"])`);
-      console.log(`  wolf: ${brain.label}`);
+      if (brain.problem) console.error(`  wolf: ERROR ${brain.problem} No tale can start until it's set.`);
+      else console.log(`  wolf: ${brain.label}`);
     },
   }, handler);
 

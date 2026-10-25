@@ -1,9 +1,11 @@
-// A whole tale over real HTTP + SSE: three friends and the scripted wolf, on a
-// throwaway KV file, with short candles and a fast wolf.
+// A whole tale over real HTTP + SSE: three friends and the wolf (against a fake Muse
+// Spark API), on a throwaway KV file, with short candles and a fast wolf. Then: what the
+// players see when Muse fails, or isn't connected at all.
 
 import { startServer } from "../server/app.ts";
 import { castOf, type Msg, type View } from "../server/game.ts";
 import { NS } from "../server/kv.ts";
+import { fakeMuse } from "./fake_muse.ts";
 
 function assert(cond: unknown, msg = "assertion failed"): asserts cond {
   if (!cond) throw new Error(msg);
@@ -73,6 +75,7 @@ Deno.test({
   async fn() {
     const dir = await Deno.makeTempDir();
     const kv = await Deno.openKv(`${dir}/global-kv.sqlite3`);
+    const muse = fakeMuse();
     // Another project's key in the same shared database must survive untouched.
     await kv.set(["some-other-project", "hello"], "world");
     const app = await startServer({
@@ -80,7 +83,7 @@ Deno.test({
       hostname: "127.0.0.1",
       timing: { answerMs: 6_000, discussMs: 6_000, voteMs: 6_000 },
       wolfPace: 0.02,
-      muse: { apiKey: "", baseUrl: "", model: "", effort: "" },
+      muse: { apiKey: "test", baseUrl: muse.url, model: "muse-spark-1.3", effort: "low" },
       kv,
       quiet: true,
     });
@@ -196,8 +199,96 @@ Deno.test({
     } finally {
       for (const c of clients) c.close();
       await app.close();
+      await muse.close();
       kv.close();
       await Deno.remove(dir, { recursive: true });
     }
+  },
+});
+
+/** Two friends at a fresh server, with the given Muse API key. */
+async function twoFriends(apiKey: string, test: (t: {
+  host: Client;
+  guest: Client;
+  muse: ReturnType<typeof fakeMuse>;
+  act: (c: Client, type: string, extra?: Record<string, unknown>) => Promise<{ status: number; data: { error?: string } }>;
+}) => Promise<void>) {
+  const dir = await Deno.makeTempDir();
+  const kv = await Deno.openKv(`${dir}/global-kv.sqlite3`);
+  const muse = fakeMuse();
+  const app = await startServer({
+    port: 0,
+    hostname: "127.0.0.1",
+    timing: { answerMs: 20_000, discussMs: 20_000, voteMs: 20_000 },
+    wolfPace: 0.02,
+    muse: { apiKey, baseUrl: muse.url, model: "muse-spark-1.3", effort: "low" },
+    kv,
+    quiet: true,
+  });
+  const post = async (path: string, body: unknown) => {
+    const res = await fetch(app.url + path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return { status: res.status, data: await res.json() };
+  };
+  const clients: Client[] = [];
+  try {
+    for (const name of ["Ann", "Bo"]) {
+      const { data } = await post("/api/join", { server: "the-woods", name });
+      clients.push(new Client(app.url, data.slug, data.token, name));
+    }
+    for (const c of clients) await c.until("the lobby", (v) => v.phase === "lobby" && v.players.length === 2);
+    await test({
+      host: clients[0],
+      guest: clients[1],
+      muse,
+      act: (c, type, extra = {}) => post("/api/act", { server: c.slug, token: c.token, type, ...extra }),
+    });
+  } finally {
+    for (const c of clients) c.close();
+    await app.close();
+    await muse.close();
+    kv.close();
+    await Deno.remove(dir, { recursive: true });
+  }
+}
+
+Deno.test({
+  name: "when Muse fails, every player sees the error, and it clears once Muse answers again",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    await twoFriends("test", async ({ host, guest, muse, act }) => {
+      muse.failing = true;
+      assert((await act(host, "start")).status === 200);
+      for (const c of [host, guest]) {
+        const v = await c.until("the wolf's error", (v) => v.phase === "answer" && v.wolfError !== null);
+        assert(v.wolfError!.includes("HTTP 404") && v.wolfError!.includes("model was not found"), v.wolfError!);
+      }
+      assert(!host.log.some((m) => m.kind === "answer"), "nothing stands in for the wolf's answer");
+
+      muse.failing = false;
+      for (const c of [host, guest]) await act(c, "say", { text: `${c.name} answer` });
+      // With both friends in, the wolf tries again; this time Muse answers and the error goes away.
+      const v = await host.until("the discussion", (v) => v.phase === "discuss");
+      assert(v.wolfError === null, `error still showing: ${v.wolfError}`);
+      assert(host.log.some((m) => m.kind === "answer" && m.text === "ok fair mine was kinda boring too"));
+    });
+  },
+});
+
+Deno.test({
+  name: "without a Muse key the error shows from the lobby on, and no tale starts",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    await twoFriends("", async ({ host, act, muse }) => {
+      assert(host.view!.wolfError?.includes("MUSE_API_KEY is not set"), `lobby view: ${host.view!.wolfError}`);
+      const r = await act(host, "start");
+      assert(r.status === 503 && r.data.error?.includes("MUSE_API_KEY"), JSON.stringify(r));
+      assert(muse.calls === 0);
+    });
   },
 });

@@ -17,7 +17,7 @@ import {
   viewFor,
 } from "../server/game.ts";
 import { slugify } from "../server/store.ts";
-import { finalVote, tidy } from "../server/wolf.ts";
+import { easeLaughs, finalVote, tidy } from "../server/wolf.ts";
 
 const T = { answerMs: 60_000, discussMs: 75_000, voteMs: 45_000 };
 
@@ -45,7 +45,7 @@ function rng(seed = 42) {
 
 function room(players = 3): Room {
   const ps = Array.from({ length: players }, (_, i) => newPlayer(`p${i}`, 0));
-  const r = newRoom("test", ps[0], 0, "scripted");
+  const r = newRoom("test", ps[0], 0);
   r.players = ps;
   return r;
 }
@@ -192,6 +192,14 @@ Deno.test("the wolf's vote: tie itself out of trouble, often join a pile-on, els
   // Nothing to go on yet: keep the planned pick.
   r.votes = {};
   eq(finalVote(r, b, 0.1), b);
+});
+
+Deno.test("the wolf doesn't laugh on every line", () => {
+  eq(easeLaughs("misread lol been coding all night", []), "misread lol been coding all night");
+  eq(easeLaughs("misread lol been coding all night", ["cold pizza lol"]), "misread been coding all night");
+  eq(easeLaughs("lol, no", ["haha ok"]), "no");
+  eq(easeLaughs("lmao", ["lol"]), "lmao", "a line that's only a laugh stays");
+  eq(easeLaughs("hollow trolley", ["lol"]), "hollow trolley", "only whole words");
 });
 
 Deno.test("views hide real names and the wolf until the reveal", () => {

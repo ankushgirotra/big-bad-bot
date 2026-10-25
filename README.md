@@ -56,10 +56,14 @@ Either way, open http://localhost:8000. Friends on the same Wi-Fi can join at `h
 
 ## The wolf
 
-`MUSE_API_KEY` (from [dev.meta.ai](https://dev.meta.ai)) turns on the Muse Spark wolf. It talks to the Meta Model API's
-OpenAI-compatible chat completions endpoint, using `muse-spark-1.3` with `reasoning_effort: low` (about 2–3s a line). It
-never uses the `-contributor` models, which let Meta train on the chat. Without a key, or if a call fails, the wolf
-falls back to the scripted lines from the original design.
+The wolf is always Muse Spark, and `MUSE_API_KEY` (from [dev.meta.ai](https://dev.meta.ai)) is required. It talks to the
+Meta Model API's OpenAI-compatible chat completions endpoint, using `muse-spark-1.3` with `reasoning_effort: low` (about
+2–3s a line). It never uses the `-contributor` models, which let Meta train on the chat.
+
+There are no canned lines to fall back on. Without a key, both pages show a red error and no tale can start
+(`/api/health` answers 503). If a call fails (after a couple of quick retries for the API's occasional 404/429/5xx, or
+after 15s with no answer), the wolf makes no move, and every player sees a red banner with the reason until the wolf's
+next move goes through.
 
 The wolf waits and types like a person: it answers mid-pack, replies when someone names it, sometimes jumps into the
 discussion, and votes with the crowd. `WOLF_PACE=0.2` speeds it up for testing.
@@ -95,7 +99,7 @@ server/store.ts    rooms, messages, presence and typing in KV, under ["big-bad-b
 server/wolf.ts     the Muse Spark brain, and the driver that decides when it speaks
 server/app.ts      HTTP routes and the SSE stream
 server/kv.ts       opens global-kv
-server/cast.ts     disguises, questions, scripted wolf lines
+server/cast.ts     disguises and questions
 public/            the two pages (index.html, game.html) and the storybook styles
 tests/             unit + end-to-end tests
 ```

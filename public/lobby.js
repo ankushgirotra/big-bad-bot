@@ -19,14 +19,15 @@ hint();
 let castShown = false;
 async function refresh() {
   try {
-    const { servers, cast, wolf } = await api('/api/servers');
+    const { servers, cast, wolfError } = await api('/api/servers');
     if (!castShown) {
       castShown = true;
       $('cast').innerHTML = cast.map((c) => `<div class="c" aria-disabled="true">
         <span class="seal" style="background:${c.color}">${esc(c.name[0].toUpperCase())}</span>
         <span class="nm">${esc(c.name)}<span class="rl">${esc(c.role)} · ${esc(c.voice)}</span></span><span></span></div>`).join('');
-      if (wolf !== 'muse') $('wolfKind').textContent = 'a scripted wolf (no Muse key on this server)';
     }
+    $('wolfErr').hidden = !wolfError;
+    if (wolfError) $('wolfErr').innerHTML = `<b>The wolf can't play</b>${esc(wolfError)}`;
     $('serversNote').textContent = servers.length
       ? 'lit windows in the woods. tap one to join it, or name a new one below.'
       : 'no tales are being told yet. name a server below to start one.';

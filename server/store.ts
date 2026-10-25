@@ -80,7 +80,8 @@ function nextId(now: number): string {
 }
 
 export class Store {
-  constructor(readonly kv: Deno.Kv, readonly timing: Timing, readonly ai: Room["ai"]) {}
+  /** wolfProblem: why Muse Spark can't play on this server at all (no tale starts then), or null. */
+  constructor(readonly kv: Deno.Kv, readonly timing: Timing, readonly wolfProblem: string | null = null) {}
 
   async room(slug: string): Promise<Room | null> {
     return (await this.kv.get<Room>(keys.room(slug))).value;
@@ -195,7 +196,7 @@ export class Store {
       // A tale everyone walked away from doesn't hold the name; start the cottage over.
       if (!room || (room.phase !== "lobby" && online.size === 0)) {
         me = newPlayer(name, now);
-        const fresh = newRoom(slug, me, now, this.ai);
+        const fresh = newRoom(slug, me, now);
         if (room) fresh.game = room.game + 1; // keep the old tale's messages out of the new one
         return { room: fresh, drafts: [sys(`${name} found the cottage.`)] };
       }
@@ -266,8 +267,8 @@ export class Store {
       let drafts: Draft[];
       switch (type) {
         case "start":
+          if (this.wolfProblem) throw new GameError(`The wolf can't play. ${this.wolfProblem}`, 503);
           room.players = room.players.filter((p) => online.has(p.id));
-          room.ai = this.ai;
           drafts = start(room, isHost, now, t);
           break;
         case "say":
@@ -326,6 +327,7 @@ export class Store {
     const { msgs } = await this.mutate(slug, (room, now) => {
       if (!room || room.game !== game || room.phase !== phase || room.chapter !== chapter) return null;
       if (phase === "answer" && room.answered.includes(room.wolfSeat)) return null;
+      room.wolfError = null;
       return { room, drafts: say(room, room.wolfSeat, text, now, this.timing) };
     });
     const room = await this.room(slug);
@@ -336,7 +338,19 @@ export class Store {
   async wolfVote(slug: string, game: number, target: number): Promise<void> {
     await this.mutate(slug, (room, now) => {
       if (!room || room.game !== game || room.phase !== "vote" || room.votes[room.wolfSeat] !== undefined) return null;
+      room.wolfError = null;
       return { room, drafts: castVote(room, room.wolfSeat, target, now) };
     });
+  }
+
+  /** Muse Spark couldn't make the wolf's move: keep the reason on the room for every player to see. */
+  async wolfFailed(slug: string, game: number, text: string): Promise<void> {
+    await this.mutate(slug, (room, now) => {
+      if (!room || room.game !== game) return null;
+      room.wolfError = { text, at: now };
+      return { room, drafts: [] };
+    });
+    const room = await this.room(slug);
+    if (room && room.wolfSeat >= 0) await this.kv.delete([...keys.typing(slug), room.wolfSeat]);
   }
 }

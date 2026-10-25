@@ -13,7 +13,7 @@ if (!cfg.muse.apiKey) {
 const brain = new Brain(cfg.muse);
 
 const players = ["a", "b", "c"].map((n) => newPlayer(n, 0));
-const room = newRoom("smoke", players[0], 0, "muse");
+const room = newRoom("smoke", players[0], 0);
 room.players = players;
 start(room, true, Date.now(), cfg.timing);
 const humans = room.seats.map((_, i) => i).filter((i) => i !== room.wolfSeat);

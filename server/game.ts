@@ -58,7 +58,8 @@ export interface Room {
   /** voter seat -> accused seat */
   votes: Record<number, number>;
   result: Result | null;
-  ai: "muse" | "scripted";
+  /** Why Muse Spark couldn't play the wolf's last move. Cleared when a move goes through. */
+  wolfError: { text: string; at: number } | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -95,7 +96,7 @@ export function newPlayer(name: string, now: number): Player {
   return { id: crypto.randomUUID(), name, token: crypto.randomUUID(), joinedAt: now };
 }
 
-export function newRoom(slug: string, host: Player, now: number, ai: Room["ai"]): Room {
+export function newRoom(slug: string, host: Player, now: number): Room {
   return {
     slug,
     game: 1,
@@ -114,7 +115,7 @@ export function newRoom(slug: string, host: Player, now: number, ai: Room["ai"])
     early: [],
     votes: {},
     result: null,
-    ai,
+    wolfError: null,
     createdAt: now,
     updatedAt: now,
   };
@@ -223,6 +224,7 @@ export function start(room: Room, isHost: boolean, now: number, t: Timing, rng =
   room.chapterStarts = [];
   room.votes = {};
   room.result = null;
+  room.wolfError = null;
   return [
     sys("the friends gather at the cottage door."),
     sys("somewhere ahead, the wolf is already typing in someone else's voice."),
@@ -317,6 +319,7 @@ export function again(room: Room, now: number, keep: (p: Player) => boolean): Dr
     early: [],
     votes: {},
     result: null,
+    wolfError: null,
   });
   room.players = room.players.filter(keep);
   if (!room.players.some((p) => p.id === room.hostId) && room.players[0]) room.hostId = room.players[0].id;
@@ -389,7 +392,7 @@ export function viewFor(room: Room, playerId: string, online: Set<string>, typin
     chapter: room.chapter,
     question: room.questions[room.chapter] ?? null,
     deadline: room.deadline,
-    ai: room.ai,
+    wolfError: room.wolfError?.text ?? null,
     you: {
       name: me.name,
       seat,

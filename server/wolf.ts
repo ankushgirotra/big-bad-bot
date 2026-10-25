@@ -1,19 +1,11 @@
 // The wolf: a Muse Spark agent sitting in one seat, pretending to be a friend.
 //
-// Brain   writes the wolf's lines (Muse Spark, or the design's scripted lines).
+// Brain   writes the wolf's lines and picks its vote, always with Muse Spark. There is
+//         no stand-in: when Muse can't play, the Brain throws and the room shows why.
 // Driver  decides when the wolf speaks and votes. It reacts to the room's state
 //         rather than to requests, so any server process can pick it up: one
 //         process per room holds a short KV lease and drives the wolf.
 
-import {
-  GENERIC_ANSWERS,
-  GRILL_FALLBACK,
-  SCRIPTED_ANSWERS,
-  SCRIPTED_GRILL,
-  SCRIPTED_OPENERS,
-  SCRIPTED_REACTIONS,
-  voiceify,
-} from "./cast.ts";
 import { castOf, cleanText, mentions, type Msg, type Room } from "./game.ts";
 import { keys, type Store } from "./store.ts";
 
@@ -26,10 +18,9 @@ export interface MuseConfig {
 
 type Task =
   | { type: "answer"; question: string }
-  | { type: "reply"; from: number; text: string }
-  | { type: "chime"; from?: number; text?: string };
+  | { type: "reply"; from: number; text: string; at?: number }
+  | { type: "chime"; from?: number; text?: string; at?: number };
 
-const pick = <T>(xs: readonly T[]) => xs[Math.floor(Math.random() * xs.length)];
 const rand = (lo: number, hi: number) => lo + Math.random() * (hi - lo);
 const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
 
@@ -47,7 +38,7 @@ function systemPrompt(room: Room): string {
     `Your seat is ${me.name}, ${me.role}. Every player was asked to text in their seat's voice, and yours is "${me.voice}". Follow it loosely, the imperfect way a real person would. The other seats: ${others}.`,
     `Above all, make sense. Every message has to be a believable reply to what was actually asked or said just now. Answer questions for real, with one concrete, ordinary detail (you're a college student at a hackathon this weekend). Stay consistent with everything you already said in this chat (your lines are marked "(you)"): same life, same day, same story. No random tangents, no non sequiturs, nothing a friend would read and go "what?".`,
     `How real people write here: short, casual, a bit messy. Punctuation gets skipped, nobody explains themselves at length. They joke, and they get mildly annoyed when accused.`,
-    `What gets the AI caught: tidy grammar, sounding wholesome or like an ad, generic answers like "pizza and coffee", repeating someone's exact words back, polite agreement, saying "as a human", em dashes, emoji spam, over-defending ("I promise I'm real!"), and long messages.`,
+    `What gets the AI caught: tidy grammar, sounding wholesome or like an ad, generic answers like "pizza and coffee", repeating someone's exact words back, polite agreement, saying "as a human", em dashes, emoji spam, over-defending ("I promise I'm real!"), tacking "lol" or "lmao" onto lines, leaning on the same filler every message, and long messages.`,
     `Blend in. Never admit or hint that you're an AI. When someone questions you, answer their actual point like a slightly annoyed friend, and sometimes turn it back on someone by pointing at something they really said. Only call someone out over something specific they wrote.`,
     `Reply with only the text of your one chat message: no quotes, no name prefix, 25 words at most.`,
   ].join("\n\n");
@@ -109,30 +100,13 @@ export function tidy(raw: string, name: string): string {
   return cleanText(t);
 }
 
-function scripted(room: Room, task: Task): string {
-  const me = castOf(room, room.wolfSeat);
-  switch (task.type) {
-    case "answer":
-      return SCRIPTED_ANSWERS[task.question]?.[me.id] ??
-        voiceify(me.id, GENERIC_ANSWERS[task.question] ?? "honestly not much to say");
-    case "reply":
-      return pick(SCRIPTED_GRILL[me.id] ?? GRILL_FALLBACK.map((s) => voiceify(me.id, s)));
-    case "chime":
-      return voiceify(me.id, pick(task.text ? SCRIPTED_REACTIONS : SCRIPTED_OPENERS));
-  }
-}
+const LAUGH = /\b(lol|lmao|haha+)\b/i;
 
-/** Without Muse: vote for whoever the group has named the most. */
-function mostSuspected(room: Room, msgs: Msg[], choices: number[]): number {
-  const said = msgs.filter((m) => m.kind === "chat" && m.seat !== undefined && m.seat !== room.wolfSeat);
-  let best = -1;
-  let top: number[] = [];
-  for (const c of choices) {
-    const n = said.filter((m) => mentions(m.text, castOf(room, c).name)).length;
-    if (n > best) [best, top] = [n, [c]];
-    else if (n === best) top.push(c);
-  }
-  return pick(top);
+/** Models tack "lol" onto everything; people don't. Drop it when the wolf laughed in one of its last few lines. */
+export function easeLaughs(text: string, recent: string[]): string {
+  if (!recent.slice(-3).some((t) => LAUGH.test(t))) return text;
+  const out = text.replace(/\s*\b(lol|lmao|haha+)\b[.!]*/gi, "").replace(/^[\s,]+/, "").trim();
+  return out || text;
 }
 
 /**
@@ -151,6 +125,8 @@ export function finalVote(room: Room, planned: number, roll = Math.random()): nu
   return planned;
 }
 
+const MUSE_TIMEOUT_MS = 15_000;
+
 export class Brain {
   constructor(readonly cfg: MuseConfig) {}
 
@@ -158,50 +134,80 @@ export class Brain {
     return this.cfg.apiKey.length > 0;
   }
 
+  /** Why Muse Spark can't play at all on this server, or null when it can. */
+  get problem(): string | null {
+    return this.live ? null : "Muse Spark isn't connected: MUSE_API_KEY is not set on this server.";
+  }
+
   get label(): string {
-    return this.live ? this.cfg.model : "scripted (no MUSE_API_KEY)";
+    return this.problem ?? this.cfg.model;
   }
 
   async line(room: Room, msgs: Msg[], task: Task): Promise<string> {
-    if (this.live) {
-      try {
-        const out = tidy(
-          await this.complete(
-            systemPrompt(room),
-            [transcript(room, msgs), styleNotes(room, msgs), instruction(room, task)].filter(Boolean).join("\n\n"),
-          ),
-          castOf(room, room.wolfSeat).name,
-        );
-        if (out) return out;
-      } catch (err) {
-        console.warn(`[wolf] Muse failed, using a scripted line: ${err}`);
-      }
+    const me = castOf(room, room.wolfSeat);
+    const raw = await this.complete(
+      systemPrompt(room),
+      [transcript(room, msgs), styleNotes(room, msgs), instruction(room, task)].filter(Boolean).join("\n\n"),
+    );
+    let out = tidy(raw, me.name);
+    // Laughing is the voice for some seats; for everyone else, keep it occasional.
+    if (!LAUGH.test(me.voice)) {
+      out = easeLaughs(out, msgs.filter((m) => m.seat === room.wolfSeat && m.kind !== "chap").map((m) => m.text));
     }
-    return scripted(room, task);
+    if (!out) throw new Error(`Muse Spark sent back an empty message (raw: ${JSON.stringify(raw.slice(0, 80))}).`);
+    return out;
   }
 
   async vote(room: Room, msgs: Msg[]): Promise<number> {
     const choices = room.seats.map((_, i) => i).filter((i) => i !== room.wolfSeat);
-    if (this.live) {
-      try {
-        const out = await this.complete(
-          systemPrompt(room),
-          `${
-            transcript(room, msgs)
-          }\n\nVoting time. Pick the seat you'll vote to unmask (never yourself). Usually that's whoever the group seems most suspicious of, so you blend in; someone who kept pushing on you is a fair pick too. Reply with only their name.`,
-        );
-        const choice = choices.find((i) => mentions(out, castOf(room, i).name));
-        if (choice !== undefined) return choice;
-      } catch (err) {
-        console.warn(`[wolf] Muse failed to vote, voting by suspicion: ${err}`);
-      }
+    const out = await this.complete(
+      systemPrompt(room),
+      `${
+        transcript(room, msgs)
+      }\n\nVoting time. Pick the seat you'll vote to unmask (never yourself). Usually that's whoever the group seems most suspicious of, so you blend in; someone who kept pushing on you is a fair pick too. Reply with only their name.`,
+    );
+    const choice = choices.find((i) => mentions(out, castOf(room, i).name));
+    if (choice === undefined) {
+      throw new Error(`Muse Spark's vote didn't name anyone in the cast: ${JSON.stringify(out.slice(0, 80))}.`);
     }
-    return mostSuspected(room, msgs, choices);
+    return choice;
   }
 
-  /** One OpenAI-compatible chat completion against the Meta Model API. */
+  /** One OpenAI-compatible chat completion against the Meta Model API. Throws a readable error on failure. */
   async complete(system: string, user: string): Promise<string> {
-    const res = await fetch(`${this.cfg.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
+    const problem = this.problem;
+    if (problem) throw new Error(problem);
+    // The API now and then answers 404 model_not_found (or 429/5xx) to a request that works a
+    // moment later, so retry those a couple of times before giving up.
+    for (let attempt = 0;; attempt++) {
+      let res: Response;
+      try {
+        res = await this.#request(system, user);
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "TimeoutError") {
+          throw new Error(`Muse Spark didn't answer within ${MUSE_TIMEOUT_MS / 1000}s.`);
+        }
+        throw new Error(`Couldn't reach Muse Spark: ${err instanceof Error ? err.message : err}`);
+      }
+      if (res.ok) {
+        const data = await res.json();
+        return String(data?.choices?.[0]?.message?.content ?? "");
+      }
+      const body = (await res.text()).slice(0, 300);
+      if (attempt < 2 && (res.status === 404 || res.status === 429 || res.status >= 500)) {
+        await new Promise((r) => setTimeout(r, 250 * (attempt + 1)));
+        continue;
+      }
+      let detail = body;
+      try {
+        detail = JSON.parse(body)?.error?.message ?? body;
+      } catch { /* not JSON */ }
+      throw new Error(`Muse Spark answered HTTP ${res.status}: ${detail}`);
+    }
+  }
+
+  #request(system: string, user: string): Promise<Response> {
+    return fetch(`${this.cfg.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
       method: "POST",
       headers: { authorization: `Bearer ${this.cfg.apiKey}`, "content-type": "application/json" },
       body: JSON.stringify({
@@ -211,12 +217,8 @@ export class Brain {
         max_completion_tokens: 1500,
         messages: [{ role: "system", content: system }, { role: "user", content: user }],
       }),
-      // A friend who goes quiet for longer than this looks off; fall back to a scripted line instead.
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(MUSE_TIMEOUT_MS),
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
-    const data = await res.json();
-    return String(data?.choices?.[0]?.message?.content ?? "");
   }
 }
 
@@ -404,7 +406,7 @@ class Driver {
           (m.at - this.#wolfLineAt < 20_000 && /\b(you|u|ur|your)\b|\?/i.test(m.text));
         this.#wolfLineAt = 0;
         if (now - m.at > 30_000) continue;
-        const task: Task = { type: atMe ? "reply" : "chime", from: m.seat, text: m.text };
+        const task: Task = { type: atMe ? "reply" : "chime", from: m.seat, text: m.text, at: m.at };
         if (task.type === "reply") {
           this.#once(`reply:${m.id}`, rand(1_500, 4_000) * P, () => this.#speak(g, "discuss", ch, task));
         } else if (!this.#chiming && now - this.#lastSpoke > 12_000 * P && Math.random() < 0.25) {
@@ -431,6 +433,7 @@ class Driver {
         // Ask Muse now, so its thinking time doesn't make the wolf late.
         choice: this.pack.brain.vote(room, await store.messages(this.slug, g)),
       });
+      plan.choice.catch(() => {}); // a failure is reported when the vote is due, not as a crash now
       const cast = Object.keys(room.votes).filter((s) => Number(s) !== ws).length;
       if (cast >= friends || (cast >= plan.wait && now >= plan.readAt)) {
         this.#once(`vote:${g}`, rand(800, 2_500) * P, () => this.#vote(g));
@@ -454,21 +457,39 @@ class Driver {
       const room = await store.room(this.slug);
       if (!room || room.game !== g || room.phase !== phase || room.chapter !== ch) return;
       if (phase === "answer" && room.answered.includes(room.wolfSeat)) return;
+      const msgs = await store.messages(this.slug, g);
+      // Another process may have driven the wolf until a moment ago: go by the chat, not by
+      // memory, so a message the wolf already answered (or a chapter it already opened) gets
+      // nothing twice.
+      if (task.type !== "answer") {
+        const since = task.at ?? -1;
+        const spoke = msgs.some((m) =>
+          m.kind === "chat" && m.seat === room.wolfSeat && m.chapter === ch && m.at >= since
+        );
+        if (spoke) return;
+      }
       // Show "is writing…" while Muse thinks, so its thinking time counts as typing time,
       // then finish typing it out like a person would.
       const started = Date.now();
-      const pending = this.pack.brain.line(room, await store.messages(this.slug, g), task);
+      const pending = this.pack.brain.line(room, msgs, task);
       let text: string | undefined;
-      void pending.then((t) => text = t);
+      let failed: unknown = null;
+      const settled = pending.then((t) => void (text = t), (err) => void (failed = err ?? "unknown error"));
       const end = () =>
-        text === undefined ? Infinity : started + clamp(900 + text.length * 55, 1_500, 7_000) * this.pack.pace;
+        failed !== null
+          ? 0
+          : text === undefined
+          ? Infinity
+          : started + clamp(900 + text.length * 55, 1_500, 7_000) * this.pack.pace;
       while (!this.#stopped && Date.now() < end()) {
         await store.setTyping(this.slug, room.wolfSeat);
-        await (text === undefined
-          ? Promise.race([pending, this.#sleep(2_500)])
+        await (text === undefined && failed === null
+          ? Promise.race([settled, this.#sleep(2_500)])
           : this.#sleep(Math.min(2_500, Math.max(0, end() - Date.now()))));
       }
-      if (this.#stopped || !this.#leader || text === undefined) return;
+      if (this.#stopped || !this.#leader) return;
+      if (failed !== null) return await this.#failed(g, failed);
+      if (text === undefined) return;
       if (await store.wolfSay(this.slug, g, phase, ch, text)) this.#lastSpoke = Date.now();
     } finally {
       if (task.type === "answer") this.#answering.delete(flight);
@@ -479,11 +500,24 @@ class Driver {
     const store = this.pack.store;
     let room = await store.room(this.slug);
     if (!room || room.game !== g || room.phase !== "vote" || room.votes[room.wolfSeat] !== undefined) return;
-    const planned = await (this.#votePlan?.game === g
-      ? this.#votePlan.choice
-      : this.pack.brain.vote(room, await store.messages(this.slug, g)));
+    let planned: number;
+    try {
+      planned = await (this.#votePlan?.game === g
+        ? this.#votePlan.choice
+        : this.pack.brain.vote(room, await store.messages(this.slug, g)));
+    } catch (err) {
+      if (!this.#stopped && this.#leader) await this.#failed(g, err);
+      return;
+    }
     room = await store.room(this.slug);
     if (!room || room.game !== g || room.phase !== "vote") return;
     if (!this.#stopped && this.#leader) await store.wolfVote(this.slug, g, finalVote(room, planned));
+  }
+
+  /** Muse couldn't play this move: put the reason on the room so every player sees it. */
+  async #failed(g: number, err: unknown) {
+    const text = err instanceof Error ? err.message : String(err);
+    console.warn(`[wolf ${this.slug}] ${text}`);
+    await this.pack.store.wolfFailed(this.slug, g, text);
   }
 }
