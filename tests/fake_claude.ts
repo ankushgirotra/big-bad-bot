@@ -11,6 +11,8 @@ export interface FakeClaude {
   requests: { model: string; fallbacks?: unknown; beta: string | null; body: Record<string, unknown> }[];
   /** What a request for a tale's questions gets back. */
   questions: Record<string, string>;
+  /** What the next wolf lines say, oldest first; once they run out, a plain default line. */
+  lines: string[];
   close(): Promise<void>;
 }
 
@@ -20,6 +22,7 @@ export function fakeClaude(): FakeClaude {
     calls: 0,
     models: [],
     requests: [],
+    lines: [],
     questions: {
       chapter_one: "weirdest thing in your fridge rn?",
       chapter_two: "last thing you bought and instantly regretted",
@@ -40,9 +43,12 @@ export function fakeClaude(): FakeClaude {
     }
     const system: string = body.system;
     const user: string = body.messages[0].content;
-    // Questions come back as the structured output asked for; a vote names the first other
-    // seat from the system prompt; anything else is a plain line.
-    const text = body.output_config?.format
+    // Structured output comes back as the JSON asked for: a wolf line's {message}, or a tale's
+    // questions. A vote names the first other seat from the system prompt.
+    const format = body.output_config?.format;
+    const text = format?.schema?.properties?.message
+      ? JSON.stringify({ message: fake.lines.shift() ?? "ok fair mine was kinda boring too" })
+      : format
       ? JSON.stringify(fake.questions)
       : user.includes("Voting time")
       ? /The other seats: ([^ (]+)/.exec(system)![1]

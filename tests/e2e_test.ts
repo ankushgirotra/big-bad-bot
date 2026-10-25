@@ -162,7 +162,10 @@ Deno.test({
       }
       // The wolf's model wrote this tale's questions (question marks dropped, like the originals).
       assert(host.view!.question === "weirdest thing in your fridge rn", `chapter one: ${host.view!.question}`);
-      const asked = claude.requests.filter((r) => (r.body.output_config as { format?: unknown })?.format);
+      const asked = claude.requests.filter((r) =>
+        (r.body.output_config as { format?: { schema: { required: string[] } } })?.format?.schema.required
+          .includes("finale")
+      );
       assert(asked.length === 1 && asked[0].model === WOLF_MODELS.haiku.id, "one questions call, to the wolf's model");
 
       const late = await post("/api/join", { server: "grandmas-house", name: "Dee" });

@@ -45,6 +45,36 @@ const QUESTION_PROMPT = [
   `The originals, for style:\n${[...QUESTION_POOL, LAST_QUESTION].map((q) => `- ${q}`).join("\n")}`,
 ].join("\n\n");
 
+/** The most words a wolf line may have: in the private warm-up chat, and in the tale itself. */
+export const WARM_WORDS = 20;
+export const LINE_WORDS = 25;
+
+/**
+ * Structured output for a wolf line: the message, and nothing else. Whatever the model
+ * thinks stays in its (hidden) thinking blocks instead of spilling into the reply.
+ */
+const MESSAGE_FORMAT: Anthropic.Beta.BetaJSONOutputFormat = {
+  type: "json_schema",
+  schema: {
+    type: "object",
+    properties: { message: { type: "string" } },
+    required: ["message"],
+    additionalProperties: false,
+  },
+};
+
+/**
+ * Why a wolf line can't go out as written, or null when it can. Markup like
+ * "<thinking_mode>" means the model wrote its reasoning into the reply.
+ */
+export function lineProblem(text: string, maxWords: number): string | null {
+  if (!text) return "it was empty";
+  if (/<\/?[a-z][\w-]*[^>]*>/i.test(text)) return "it had markup in it, so it was the reasoning rather than a message";
+  const n = text.split(/\s+/).filter(Boolean).length;
+  if (n > maxWords) return `it was ${n} words, over the ${maxWords}-word limit`;
+  return null;
+}
+
 /** Structured output: exactly three strings, in chapter order. */
 const QUESTION_FORMAT: Anthropic.Beta.BetaJSONOutputFormat = {
   type: "json_schema",
@@ -64,7 +94,10 @@ export interface ClaudeConfig {
   apiKey: string;
   /** The WOLF_MODEL env var: "haiku" (the default), "sonnet" or "opus". */
   model: string;
-  /** "low" keeps lines quick on every model. */
+  /**
+   * "medium" (the default) leaves room to think when a line needs it: at "low", Haiku skips
+   * thinking and sometimes reasons in the reply instead. Measured about as fast on these short lines.
+   */
   effort: "low" | "medium" | "high";
   /** Only tests point this elsewhere (a fake Messages API). */
   baseURL?: string;
@@ -95,7 +128,7 @@ function systemPrompt(room: Room): string {
     `What gets the AI caught: tidy grammar, sounding wholesome or like an ad, generic answers like "pizza and coffee", repeating someone's exact words back, polite agreement, saying "as a human", em dashes, emoji spam, over-defending ("I promise I'm real!"), tacking "lol" or "lmao" onto lines, leaning on the same filler every message, and long messages.`,
     `Blend in. Never admit or hint that you're an AI. When someone questions you, answer their actual point like a slightly annoyed friend, and sometimes turn it back on someone by pointing at something they really said. Only call someone out over something specific they wrote.`,
     warmStyle(room),
-    `Reply with only the text of your one chat message: no quotes, no name prefix, 25 words at most. Completely avoid all emojis.`,
+    `Think it over first if that helps; your thinking stays private. Then put only the chat message itself in "message": no quotes, no name prefix, no notes on how you chose it, ${LINE_WORDS} words at most. Completely avoid all emojis.`,
   ].filter(Boolean).join("\n\n");
 }
 
@@ -117,7 +150,7 @@ export function warmStyle(room: Room): string {
 }
 
 /** The wolf's side of one player's private warm-up chat. */
-function warmPrompt(lines: { from: "you" | "wolf"; text: string }[]): { system: string; user: string } {
+export function warmPrompt(lines: { from: "you" | "wolf"; text: string }[]): { system: string; user: string } {
   const mine = lines.filter((l) => l.from === "you").map((l) => l.text);
   const style = profile(mine);
   return {
@@ -127,7 +160,7 @@ function warmPrompt(lines: { from: "you" | "wolf"; text: string }[]): { system: 
         style ? ` So far: ${describe(style).join("; ")}.` : ""
       }`,
       `Keep it short, like a text. Never explain the game or analyze them. Never say what you're doing or about to do, and never make up stories, plans or a day of your own: you're a bot getting to know them, so keep anything about yourself vague.`,
-      `Reply with only your one message: no quotes, no name prefix, 20 words at most.`,
+      `Think it over first if that helps; your thinking stays private. Then put only your one message in "message": no quotes, no name prefix, no notes on how you chose it, ${WARM_WORDS} words at most.`,
     ].join("\n\n"),
     user: `${lines.map((l) => `${l.from === "you" ? "Player" : "You"}: ${l.text}`).join("\n")}\n\n${
       lines.length > 1 ? "Your next message should differ in shape and opener from yours above. " : ""
@@ -260,26 +293,49 @@ export class Brain {
 
   async line(room: Room, msgs: Msg[], task: Task): Promise<string> {
     const me = castOf(room, room.wolfSeat);
-    const raw = await this.complete(
+    const mine = msgs.filter((m) => m.seat === room.wolfSeat && m.kind !== "chap").map((m) => m.text);
+    return await this.#message(
       systemPrompt(room),
       [transcript(room, msgs), styleNotes(room, msgs), instruction(room, task)].filter(Boolean).join("\n\n"),
+      LINE_WORDS,
+      (raw) => {
+        const out = tidy(raw, me.name);
+        // Laughing is the voice for some seats; for everyone else, keep it occasional.
+        return LAUGH.test(me.voice) ? out : easeLaughs(out, mine);
+      },
     );
-    let out = tidy(raw, me.name);
-    // Laughing is the voice for some seats; for everyone else, keep it occasional.
-    if (!LAUGH.test(me.voice)) {
-      out = easeLaughs(out, msgs.filter((m) => m.seat === room.wolfSeat && m.kind !== "chap").map((m) => m.text));
-    }
-    if (!out) throw new Error(`Claude sent back an empty message (raw: ${JSON.stringify(raw.slice(0, 80))}).`);
-    return out;
   }
 
   /** The wolf's reply in a player's private warm-up chat. Throws when Claude can't write one. */
   async warmLine(room: Room, playerId: string): Promise<string> {
     const { system, user } = warmPrompt(room.warmup[playerId] ?? []);
-    const raw = await this.complete(system, user);
-    const out = tidy(raw, "You");
-    if (!out) throw new Error(`Claude sent back an empty message (raw: ${JSON.stringify(raw.slice(0, 80))}).`);
-    return out;
+    return await this.#message(system, user, WARM_WORDS, (raw) => tidy(raw, "You"));
+  }
+
+  /**
+   * One chat line. The model may think as long as it likes (that stays in its hidden
+   * thinking); only the `message` field of its structured output can reach the players, and
+   * the word limit applies to that alone. A message that breaks the rules gets one retry,
+   * told why; if the retry breaks them too, the move fails and the room shows the reason.
+   */
+  async #message(system: string, user: string, maxWords: number, clean: (raw: string) => string): Promise<string> {
+    let ask = user;
+    let problem = "";
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const raw = await this.complete(system, ask, { format: MESSAGE_FORMAT });
+      let text = "";
+      try {
+        text = clean(String(JSON.parse(raw).message ?? ""));
+        problem = lineProblem(text, maxWords) ?? "";
+      } catch {
+        problem = `it wasn't the JSON asked for (${JSON.stringify(raw.slice(0, 60))})`;
+      }
+      if (!problem) return text;
+      console.warn(`[wolf] not sending a line: ${problem}: ${JSON.stringify(text.slice(0, 120))}`);
+      ask =
+        `${user}\n\nYour last reply couldn't be sent because ${problem}. Put only the message itself in "message", ${maxWords} words at most.`;
+    }
+    throw new Error(`Claude's line couldn't be sent: ${problem}.`);
   }
 
   /**

@@ -1,7 +1,7 @@
 // WOLF_MODEL: which Claude model plays the wolf, and what each choice sends to the API.
 
 import { configFromEnv } from "../server/app.ts";
-import { Brain, QUESTION_TIMEOUT_MS, WOLF_MODELS, wolfModel } from "../server/wolf.ts";
+import { Brain, lineProblem, QUESTION_TIMEOUT_MS, WOLF_MODELS, wolfModel } from "../server/wolf.ts";
 import { fakeClaude } from "./fake_claude.ts";
 
 function assert(cond: unknown, msg = "assertion failed"): asserts cond {
@@ -91,6 +91,49 @@ Deno.test({
       const err = await brain.questions([]).then(() => null, (e) => e);
       assert(String(err?.message).includes("incomplete"), String(err));
       assert(QUESTION_TIMEOUT_MS <= 15_000, "the host isn't kept waiting long");
+    } finally {
+      await fake.close();
+    }
+  },
+});
+
+Deno.test("lineProblem: the word limit and the no-reasoning rule apply to the message alone", () => {
+  eq(lineProblem("lol a bozo with free weekends tho", 20), null);
+  eq(lineProblem("love you <3 >.<", 20), null, "hearts and faces aren't markup");
+  assert(lineProblem("<thinking_mode> </thinking_mode> lol a bozo with free weekends tho", 20)?.includes("markup"));
+  assert(lineProblem("<thinking_mode> The player just complimented me", 20)?.includes("markup"));
+  eq(lineProblem(Array(21).fill("word").join(" "), 20), "it was 21 words, over the 20-word limit");
+  eq(lineProblem("", 20), "it was empty");
+});
+
+Deno.test({
+  name: "a leaked or too-long line is never sent: one retry, told why, then the move fails",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const fake = fakeClaude();
+    const room = {
+      warmup: { p: [{ from: "wolf", text: "hey", at: 0 }, { from: "you", text: "I luv ur response btw", at: 0 }] },
+    } as unknown as Parameters<Brain["warmLine"]>[0];
+    try {
+      const brain = new Brain({ apiKey: "test", model: "haiku", effort: "medium", baseURL: fake.url });
+      // The screenshots: reasoning in made-up tags. The retry's clean line is what goes out.
+      fake.lines = [
+        "<thinking_mode> The player just complimented me, so this one needs a different opener, shorter",
+        "lol a bozo with free weekends tho",
+      ];
+      eq(await brain.warmLine(room, "p"), "lol a bozo with free weekends tho");
+      const [first, retry] = fake.requests.slice(-2);
+      const format = (first.body.output_config as { format: { schema: { required: string[] } } }).format;
+      eq(format.schema.required, ["message"], "lines are structured output:");
+      const asked = (retry.body.messages as { content: string }[])[0].content;
+      assert(asked.includes("couldn't be sent because it had markup"), asked);
+
+      // Over the word limit twice: nothing is sent, and the error says why.
+      const long = Array(26).fill("word").join(" ");
+      fake.lines = [long, long];
+      const err = await brain.warmLine(room, "p").then(() => null, (e) => e);
+      assert(String(err?.message).includes("26 words, over the 20-word limit"), String(err));
     } finally {
       await fake.close();
     }
