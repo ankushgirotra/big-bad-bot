@@ -192,9 +192,12 @@ export class Store {
     let me = null as Player | null;
 
     await this.mutate(slug, (room, now) => {
-      if (!room) {
+      // A tale everyone walked away from doesn't hold the name; start the cottage over.
+      if (!room || (room.phase !== "lobby" && online.size === 0)) {
         me = newPlayer(name, now);
-        return { room: newRoom(slug, me, now, this.ai), drafts: [sys(`${name} found the cottage.`)] };
+        const fresh = newRoom(slug, me, now, this.ai);
+        if (room) fresh.game = room.game + 1; // keep the old tale's messages out of the new one
+        return { room: fresh, drafts: [sys(`${name} found the cottage.`)] };
       }
       const taken = (p: Player) => p.name.toLowerCase() === name.toLowerCase();
       const mine = typeof token === "string" ? room.players.find((p) => p.token === token) : undefined;
