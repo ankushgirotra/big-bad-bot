@@ -8,6 +8,9 @@
 //   [...NS, "typing", server, seat]          "is writing…"
 //   [...NS, "lease", server]                 which server process plays the wolf
 //   [...NS, "index", server]                 the front page's list of servers
+//   [...NS, "memory", server, game]          the wolf's memory of one tale (memory.ts)
+//   [...NS, "research", "q", query]          cached web search results, 24h (research.ts)
+//   [...NS, "research", "brief", cast, day]  a seat's pre-tale research brief, 24h
 
 import { NS } from "./kv.ts";
 import {
@@ -47,6 +50,9 @@ export const keys = {
   typing: (s: string) => [...NS, "typing", s],
   lease: (s: string) => [...NS, "lease", s],
   index: () => [...NS, "index"],
+  memory: (s: string, game: number) => [...NS, "memory", s, game],
+  research: (query: string) => [...NS, "research", "q", query],
+  researchBrief: (castId: string, day: string) => [...NS, "research", "brief", castId, day],
 };
 
 export interface ServerInfo {

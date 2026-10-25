@@ -5,6 +5,8 @@ import { CAST } from "./cast.ts";
 import { openGlobalKv } from "./kv.ts";
 import { GameError, type Msg, type Timing, viewFor } from "./game.ts";
 import { slugify, Store } from "./store.ts";
+import { Memories } from "./memory.ts";
+import { Researcher, type SearchConfig } from "./research.ts";
 import { Brain, type MuseConfig, WolfPack } from "./wolf.ts";
 
 export interface Config {
@@ -14,6 +16,8 @@ export interface Config {
   /** Multiplies every wolf delay. 1 feels human; tests use ~0.02. */
   wolfPace: number;
   muse: MuseConfig;
+  /** Web research and match memory for the Muse wolf. Absent or disabled: the original wolf. */
+  search?: SearchConfig;
   /** Use this KV instead of opening global-kv (tests). */
   kv?: Deno.Kv;
   quiet?: boolean;
@@ -39,6 +43,13 @@ export function configFromEnv(env: Pick<Deno.Env, "get"> = Deno.env): Config {
       // Not the "-contributor" models: those let Meta train on the chat.
       model: env.get("MUSE_MODEL") || "muse-spark-1.3",
       effort: env.get("MUSE_REASONING_EFFORT") || "low",
+    },
+    search: {
+      apiKey: env.get("SERPAPI_API_KEY") ?? "",
+      enabled: env.get("MUSE_RESEARCH")?.toLowerCase() !== "off",
+      timeoutMs: num("SERPAPI_TIMEOUT_MS", 4_000),
+      budget: num("MUSE_SEARCH_BUDGET", 6),
+      results: 3,
     },
   };
 }
@@ -80,7 +91,13 @@ async function body(req: Request): Promise<Record<string, unknown>> {
 export async function startServer(cfg: Config) {
   const opened = cfg.kv ? { kv: cfg.kv, where: "provided" } : await openGlobalKv();
   const kv = opened.kv;
-  const brain = new Brain(cfg.muse);
+  const research = cfg.search?.enabled
+    ? {
+      researcher: new Researcher(kv, cfg.search, fetch, cfg.quiet ? () => {} : undefined),
+      memory: new Memories(kv),
+    }
+    : undefined;
+  const brain = new Brain(cfg.muse, research);
   const store = new Store(kv, cfg.timing, brain.live ? "muse" : "scripted");
   const pack = new WolfPack(store, brain, cfg.wolfPace);
   const streams = new Set<() => void>();
@@ -199,7 +216,9 @@ export async function startServer(cfg: Config) {
         if (path === "/") return file("index.html");
         if (path === "/game") return file("game.html");
         if (/^\/[a-z0-9-]+\.(css|js|svg)$/.test(path)) return file(path.slice(1));
-        if (path === "/api/health") return json({ ok: true, kv: opened.where, wolf: brain.label });
+        if (path === "/api/health") {
+          return json({ ok: true, kv: opened.where, wolf: brain.label, research: brain.researchLabel });
+        }
         if (path === "/api/servers") return json({ servers: await store.servers(), cast: CAST, wolf: store.ai });
         if (path === "/api/events") {
           return await events(slugify(url.searchParams.get("server")), url.searchParams.get("token"));
@@ -232,6 +251,7 @@ export async function startServer(cfg: Config) {
       console.log(`Big Bad Bot is listening on http://localhost:${port}`);
       console.log(`  kv:   ${opened.where} (keys under ["big-bad-bot"])`);
       console.log(`  wolf: ${brain.label}`);
+      console.log(`  research: ${brain.researchLabel}`);
     },
   }, handler);
 

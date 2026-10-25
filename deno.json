@@ -4,6 +4,8 @@
     "start": "deno run --allow-net --allow-env --allow-read --allow-write --env-file=.env main.ts",
     "test": "deno test --allow-net --allow-env --allow-read --allow-write tests/",
     "test:muse": "deno run --allow-net --allow-env --env-file=.env tests/muse_smoke.ts",
+    "test:search": "deno run --allow-net --allow-env --env-file=.env tests/search_smoke.ts",
+    "compare": "deno run --allow-net --allow-env --allow-read --allow-write --env-file=.env tests/muse_compare.ts",
     "check": "deno check main.ts tests/ && deno lint && deno fmt --check"
   },
   "unstable": ["kv"],

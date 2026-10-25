@@ -46,13 +46,15 @@ deno task dev
 
 Either way, open http://localhost:8000. Friends on the same Wi-Fi can join at `http://<your-ip>:8000`.
 
-| Task                  | What it does                                               |
-| --------------------- | ---------------------------------------------------------- |
-| `deno task dev`       | Run with reload on save                                    |
-| `deno task start`     | Run                                                        |
-| `deno task test`      | Rule unit tests, plus a whole tale over HTTP + SSE         |
-| `deno task test:muse` | Ask the real Muse Spark wolf for a few lines (needs a key) |
-| `deno task check`     | Type-check, lint, format check                             |
+| Task                    | What it does                                                                         |
+| ----------------------- | ------------------------------------------------------------------------------------ |
+| `deno task dev`         | Run with reload on save                                                              |
+| `deno task start`       | Run                                                                                  |
+| `deno task test`        | Rule unit tests, plus a whole tale over HTTP + SSE                                   |
+| `deno task test:muse`   | Ask the real Muse Spark wolf for a few lines (needs a key)                           |
+| `deno task test:search` | One live SerpApi search, printed as a research brief (needs `SERPAPI_API_KEY`)       |
+| `deno task compare`     | The original wolf vs the research wolf on the same scripted chats (needs a Muse key) |
+| `deno task check`       | Type-check, lint, format check                                                       |
 
 ## The wolf
 
@@ -63,6 +65,44 @@ falls back to the scripted lines from the original design.
 
 The wolf waits and types like a person: it answers mid-pack, replies when someone names it, sometimes jumps into the
 discussion, and votes with the crowd. `WOLF_PACE=0.2` speeds it up for testing.
+
+### Research and memory
+
+This is retrieval-augmented generation plus a per-tale memory, all of it in the prompt. Nothing trains the model or
+makes it learn anything permanently.
+
+- **Before a tale** the wolf searches three fixed, public topics: how social deduction chats go, its seat's texting
+  voice, and this month's memes. Muse writes up to three notes on what it found, and that becomes the _Muse research
+  brief_. The brief is cached for the day, so later tales get it without a search.
+- **During a tale** Muse may answer `SEARCH: <a few words>` when the chat brings up something it doesn't know. It gets
+  one search, then writes its line. Searches are capped per tale (`MUSE_SEARCH_BUDGET`, 6 including the three pre-tale
+  ones) and spaced at least 20s apart. Results are cached for 24h, and cache hits are free.
+- **The brief** keeps search snippets (source-backed, cited `[n]` with URLs) apart from Muse's own interpretation, and
+  carries the retrieval time and its limitations (snippets only, may be stale). It is fenced off in the prompt as
+  untrusted data. Snippets are stripped of markup and of phrases that read like orders. The system prompt and the game
+  rules always win.
+- **What reaches SerpApi:** only the fixed topics above, plus Muse's few words after `sanitizeQuery` removes every
+  player's real name, every seat name, @handles, emails, URLs and long numbers. It refuses any query about the game or
+  about Muse (wolf, bot, AI…). Hidden state (who is the wolf, real names, later chapters' questions) is never in a query
+  or a brief. The key stays on the server and is redacted from every log line.
+- **Memory** (`["big-bad-bot", "memory", server, game]`): a made-up backstory fixed for the tale, Muse's own lines (its
+  claims, which it must not contradict), its searches and its briefs. Each tale has its own memory, and "read it again"
+  starts a blank one. It expires with the tale after 6h. Only the search cache, which is public web results with no
+  player data, outlives a tale.
+- **Failures:** no key, empty results, 401/403 (searches pause 1h), 429 (pause 10m), 5xx, timeouts
+  (`SERPAPI_TIMEOUT_MS`, 4s) and malformed responses all fall back to a plain line. The game never waits on search.
+- **Logs:** `[muse-research]` lines show each trigger (prematch/lookup), query, latency, cache hit or miss, and the
+  sources' domains.
+
+`MUSE_RESEARCH=off` turns all of this off, and the wolf runs exactly as before. Without `SERPAPI_API_KEY`, the wolf
+still keeps its match memory. It just doesn't search.
+
+`deno task compare` plays the same scripted chats through both wolves. Muse is always live there; search is
+`--search=live` (real SerpApi) or `--search=mock` (canned snippets, labeled as such in the report). It writes
+`.data/muse-compare-*.md` with latency, search usage, length, a rough relevance proxy, repetition, tells and factual
+checks, and leaves columns for a person to rate persona consistency. It can't tell you how often players catch Muse:
+only real games can. `tests/research_test.ts` covers the same ground with SerpApi and Muse both faked, and runs with
+`deno task test`.
 
 ## Data: the shared `global-kv`
 
@@ -93,6 +133,8 @@ main.ts            entrypoint
 server/game.ts     the rules, as pure functions (start, say, proceed, castVote, tick, …)
 server/store.ts    rooms, messages, presence and typing in KV, under ["big-bad-bot"]
 server/wolf.ts     the Muse Spark brain, and the driver that decides when it speaks
+server/research.ts SerpApi search, the search cache, query sanitizing, research briefs
+server/memory.ts   the wolf's per-tale memory: backstory, claims, searches
 server/app.ts      HTTP routes and the SSE stream
 server/kv.ts       opens global-kv
 server/cast.ts     disguises, questions, scripted wolf lines
