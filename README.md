@@ -28,8 +28,11 @@ your seat.
 
 ## Run it
 
-You need [Deno](https://deno.com) 2.x. Every API key is already in `server/keys.ts`, committed on purpose, so there is
-no `.env` to set up.
+You need [Deno](https://deno.com) 2.x and a `.env` with the API keys (it's git-ignored, so keys never get committed):
+
+```bash
+cp .env.example .env   # then fill in ANTHROPIC_API_KEY and MUSE_API_KEY
+```
 
 **On a Mac:**
 
@@ -80,8 +83,7 @@ WOLF_MODEL=opus deno task dev
 On Deno Deploy, add `WOLF_MODEL` under the app's Settings → Environment variables (leaving it out means Haiku).
 `/api/health` and the startup log show which model is playing.
 
-The key is `KEYS.anthropic` in `server/keys.ts`; environment variables such as `ANTHROPIC_API_KEY` are deliberately
-ignored, so a key in someone's shell never bills a different account.
+The key is the `ANTHROPIC_API_KEY` environment variable (from `.env` locally, or the app's settings on Deno Deploy).
 
 There are no canned lines to fall back on. Without a key, both pages show a red error and no tale can start
 (`/api/health` answers 503). If a call fails (after the SDK's one retry for 429/5xx/dropped connections, or after the
@@ -105,8 +107,8 @@ human without typing the letter e. go"). The prompt in `server/questions.ts` han
 
 Who writes them, in order:
 
-1. **Meta's Muse** (`muse-spark-1.3`, key `KEYS.muse` in `server/keys.ts`), through the Meta Model API's
-   OpenAI-compatible chat endpoint at minimal reasoning: about 1.5–2s. This is the only part of the game that uses Muse.
+1. **Meta's Muse** (`muse-spark-1.3`, key `MUSE_API_KEY`), through the Meta Model API's OpenAI-compatible chat endpoint
+   at minimal reasoning: about 1.5–2s. This is the only part of the game that uses Muse.
 2. **Claude**, the model `WOLF_MODEL` picks, if Muse fails in any way (an error, no key, bad JSON, or no answer within
    8s): about 4–6s on Haiku, with up to 12s.
 3. **The fixed list**, if Claude fails too (skipping questions this server has had).
@@ -127,12 +129,12 @@ unless the tale can actually start.
 All state lives in Deno KV. The `global-kv` database is shared with other projects, so every key this app writes starts
 with `["big-bad-bot"]`, and everything expires after 6 hours. The database is picked like this:
 
-| Where it runs                                                       | What it opens                                |
-| ------------------------------------------------------------------- | -------------------------------------------- |
-| `KV_PATH` env var set                                               | exactly that path or URL                     |
-| `denoKvDatabaseId` + `denoKvAccessToken` filled in `server/keys.ts` | `global-kv` over KV Connect, from anywhere   |
-| otherwise, on Deno Deploy                                           | the `global-kv` database assigned to the app |
-| otherwise, locally                                                  | `.data/global-kv.sqlite3`                    |
+| Environment                                        | What it opens                                |
+| -------------------------------------------------- | -------------------------------------------- |
+| `KV_PATH` set                                      | exactly that path or URL                     |
+| `DENO_KV_DATABASE_ID` + `DENO_KV_ACCESS_TOKEN` set | `global-kv` over KV Connect, from anywhere   |
+| otherwise, on Deno Deploy                          | the `global-kv` database assigned to the app |
+| otherwise, locally                                 | `.data/global-kv.sqlite3`                    |
 
 Realtime: each player's browser holds a Server-Sent Events stream. Every change rewrites the room's pulse key, and
 `kv.watch` on that key pushes the player's view to them. This works across Deploy isolates, because they all watch the
@@ -140,13 +142,12 @@ same key.
 
 ### Deploying to Deno Deploy
 
-Make an app from this repository with `main.ts` as the entrypoint. The keys come with the code, so there are no
-environment variables or secrets to set. For game state, either fill in the `global-kv` ID and token in
-`server/keys.ts`, or assign the `global-kv` database to the app (Databases → Assign). An assigned database gets a
-separate copy for each timeline (production, each branch), so preview deployments don't touch production games.
+Make an app from this repository with `main.ts` as the entrypoint, and set `ANTHROPIC_API_KEY` and `MUSE_API_KEY` (plus
+`WOLF_MODEL` if you want) under the app's Settings → Environment variables. For game state, assign the `global-kv`
+database to the app (Databases → Assign), or set `DENO_KV_DATABASE_ID` and `DENO_KV_ACCESS_TOKEN`. An assigned database
+gets a separate copy for each timeline (production, each branch), so preview deployments don't touch production games.
 
-The keys in `server/keys.ts` are readable by anyone who can read this repository: keep it private. If it ever goes
-public, GitHub's secret scanning reports the Anthropic key to Anthropic, which revokes it.
+Keys never go in the code or in git: keep them in `.env` (git-ignored) or in Deno Deploy's settings.
 
 ## Layout
 
@@ -159,7 +160,6 @@ server/app.ts      HTTP routes and the SSE stream
 server/kv.ts       opens global-kv
 server/questions.ts the prompt and check for each tale's questions
 server/muse.ts     Meta's Muse, tried first for the questions
-server/keys.ts     every API key, committed on purpose
 server/cast.ts     disguises and questions
 public/            the two pages (index.html, game.html) and the storybook styles
 tests/             unit + end-to-end tests

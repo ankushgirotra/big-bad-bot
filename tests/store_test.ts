@@ -55,9 +55,9 @@ Deno.test("without Claude no tale starts, and the reason says why", async () => 
 
     const err = await store.act(ann.slug, ann.token, { type: "start" }).then(() => null, (e) => e);
     assert(err?.status === 503, `expected 503, got ${err}`);
-    assert(String(err.message).includes("no Anthropic API key"), err.message);
+    assert(String(err.message).includes("ANTHROPIC_API_KEY"), err.message);
     assert((await store.room(ann.slug))!.phase === "lobby");
-  }, "Claude isn't connected: there's no Anthropic API key in server/keys.ts.");
+  }, "Claude isn't connected: ANTHROPIC_API_KEY isn't set on this server.");
 });
 
 /** Two friends at a fresh cottage, both here. */
@@ -135,7 +135,7 @@ Deno.test("no questions are paid for when the tale can't start", async () => {
       assert(await status(store.act(ann.slug, ann.token, { type: "start" })) === 503, "no wolf");
       assert(calls === 0, `${calls} calls`);
     },
-    "Claude isn't connected: there's no Anthropic API key in server/keys.ts.",
+    "Claude isn't connected: ANTHROPIC_API_KEY isn't set on this server.",
     writer,
   );
 });

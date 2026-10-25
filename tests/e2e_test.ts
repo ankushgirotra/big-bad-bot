@@ -363,9 +363,9 @@ Deno.test({
   sanitizeResources: false,
   async fn() {
     await twoFriends("", async ({ host, act, claude }) => {
-      assert(host.view!.wolfError?.includes("no Anthropic API key"), `lobby view: ${host.view!.wolfError}`);
+      assert(host.view!.wolfError?.includes("ANTHROPIC_API_KEY"), `lobby view: ${host.view!.wolfError}`);
       const r = await act(host, "start");
-      assert(r.status === 503 && r.data.error?.includes("server/keys.ts"), JSON.stringify(r));
+      assert(r.status === 503 && r.data.error?.includes("ANTHROPIC_API_KEY"), JSON.stringify(r));
       assert(claude.calls === 0);
     });
   },

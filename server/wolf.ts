@@ -238,7 +238,7 @@ export class Brain {
     this.#choice = wolfModel(cfg.model);
     this.#client = new Anthropic({
       apiKey: cfg.apiKey,
-      // Only the key from server/keys.ts: never a token or base URL that happens to be in the environment.
+      // Only the key from the config (ANTHROPIC_API_KEY): never a stray ANTHROPIC_AUTH_TOKEN or base URL.
       authToken: null,
       baseURL: cfg.baseURL ?? "https://api.anthropic.com",
       timeout: this.#timeoutMs,
@@ -263,7 +263,7 @@ export class Brain {
   /** Why Claude can't play at all on this server, or null when it can. */
   get problem(): string | null {
     if (!this.#choice) return `WOLF_MODEL is "${this.cfg.model}": set it to haiku, sonnet or opus.`;
-    return this.live ? null : "Claude isn't connected: there's no Anthropic API key in server/keys.ts.";
+    return this.live ? null : "Claude isn't connected: ANTHROPIC_API_KEY isn't set on this server.";
   }
 
   get label(): string {
@@ -396,7 +396,7 @@ function explain(err: unknown, timeoutMs: number): string {
     return body?.error?.message ?? e.message;
   };
   if (err instanceof Anthropic.AuthenticationError) {
-    return "Claude rejected the API key (HTTP 401). Check the key in server/keys.ts.";
+    return "Claude rejected the API key (HTTP 401). Check ANTHROPIC_API_KEY.";
   }
   if (err instanceof Anthropic.PermissionDeniedError) return `Claude refused the API key (HTTP 403): ${detail(err)}`;
   if (err instanceof Anthropic.RateLimitError) return `Claude is rate-limiting this key (HTTP 429): ${detail(err)}`;

@@ -3,10 +3,10 @@
     "@anthropic-ai/sdk": "npm:@anthropic-ai/sdk@1.3.0"
   },
   "tasks": {
-    "dev": "deno run --watch --allow-net --allow-env --allow-read --allow-write main.ts",
-    "start": "deno run --allow-net --allow-env --allow-read --allow-write main.ts",
+    "dev": "deno run --watch --allow-net --allow-env --allow-read --allow-write --env-file=.env main.ts",
+    "start": "deno run --allow-net --allow-env --allow-read --allow-write --env-file=.env main.ts",
     "test": "deno test --allow-net --allow-env --allow-read --allow-write tests/",
-    "test:claude": "deno run --allow-net --allow-env --allow-read tests/claude_smoke.ts",
+    "test:claude": "deno run --allow-net --allow-env --allow-read --env-file=.env tests/claude_smoke.ts",
     "check": "deno check main.ts tests/ && deno lint && deno fmt --check"
   },
   "unstable": ["kv"],

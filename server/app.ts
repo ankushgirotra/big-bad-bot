@@ -5,7 +5,6 @@ import { CAST } from "./cast.ts";
 import { openGlobalKv } from "./kv.ts";
 import { GameError, type Msg, type Timing, viewFor } from "./game.ts";
 import { slugify, Store } from "./store.ts";
-import { KEYS } from "./keys.ts";
 import { Muse, type MuseConfig, museFirst } from "./muse.ts";
 import { Brain, type ClaudeConfig, WolfPack } from "./wolf.ts";
 
@@ -38,10 +37,14 @@ export function configFromEnv(env: Pick<Deno.Env, "get"> = Deno.env): Config {
       voteMs: num("VOTE_SECONDS", 45) * 1000,
     },
     wolfPace: num("WOLF_PACE", 1),
-    // The key comes only from server/keys.ts, so a key in someone's shell never bills another account.
+    // API keys come from the environment: .env locally (git-ignored), the app's settings on Deno Deploy.
     // WOLF_MODEL picks haiku (the default), sonnet or opus.
-    claude: { apiKey: KEYS.anthropic.trim(), model: env.get("WOLF_MODEL") ?? "", effort: "medium" },
-    muse: { apiKey: KEYS.muse.trim() },
+    claude: {
+      apiKey: env.get("ANTHROPIC_API_KEY")?.trim() ?? "",
+      model: env.get("WOLF_MODEL") ?? "",
+      effort: "medium",
+    },
+    muse: { apiKey: env.get("MUSE_API_KEY")?.trim() ?? "" },
   };
 }
 

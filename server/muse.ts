@@ -22,7 +22,7 @@ export class Muse {
 
   /** Three new questions from Muse, through the Meta Model API's OpenAI-compatible chat endpoint. */
   async questions(recent: string[]): Promise<string[]> {
-    if (!this.cfg.apiKey) throw new Error("there's no Muse API key in server/keys.ts");
+    if (!this.cfg.apiKey) throw new Error("MUSE_API_KEY isn't set");
     const base = (this.cfg.baseURL ?? "https://api.meta.ai/v1").replace(/\/+$/, "");
     const res = await fetch(`${base}/chat/completions`, {
       method: "POST",
