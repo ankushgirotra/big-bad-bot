@@ -8,7 +8,7 @@
 //         process per room holds a short KV lease and drives the wolf.
 
 import Anthropic from "@anthropic-ai/sdk";
-import { LAST_QUESTION, QUESTION_POOL } from "./cast.ts";
+import { parseQuestions, QUESTION_PROMPT, QUESTION_SCHEMA, questionAsk } from "./questions.ts";
 import { castOf, cleanText, mentions, type Msg, type Room, warmSamples } from "./game.ts";
 import { describe, profile } from "./style.ts";
 import { keys, type Store } from "./store.ts";
@@ -35,15 +35,6 @@ const FALLBACK_BETA = "server-side-fallback-2026-07-01";
 
 /** The host is waiting on these when they start the tale; past this, the fixed list is used. */
 export const QUESTION_TIMEOUT_MS = 12_000;
-
-const QUESTION_PROMPT = [
-  `You write the chapter questions for Big Bad Bot, a party game played in a group chat. Friends hide behind storybook names, and one extra seat is secretly an AI trying to pass as one of them. Each tale has three chapters: everyone answers the chapter's question in the chat, the group picks the answers apart, and at the end they vote on who the AI is.`,
-  `So a good question is one where real people's answers come out specific, a little messy and personal, and an AI has to invent a life to keep up: what someone ate today, what's on their lock screen, the last thing they lied about. Anyone can answer it in one quick line from their own day, week or life, and the answers are fun to read side by side. Never invasive: nothing about trauma, health, money, politics, religion, sex or relationships, or anything you wouldn't ask a group of acquaintances.`,
-  `Write them the way the host would text them to the group: all lowercase, short (about 3 to 9 words), no question mark, casual. Vary how they open, like the originals do, rather than starting each one with "what's". Use "rn" only when the question really is about right now.`,
-  `Players can only type text: no photos, voice notes or links.`,
-  `Chapters one and two are warm-ups about everyday life. The finale openly dares everyone to prove they're human, or that they're not the bot, like the original "${LAST_QUESTION}", with a fresh twist on how: a limit, a format, or a kind of proof only a person would have. It names being human (or the bot) outright and ends in ". go", for example "prove you're human in five words. go" or "convince us you're not the bot, no emojis allowed. go".`,
-  `The originals, for style:\n${[...QUESTION_POOL, LAST_QUESTION].map((q) => `- ${q}`).join("\n")}`,
-].join("\n\n");
 
 /** The most words a wolf line may have: in the private warm-up chat, and in the tale itself. */
 export const WARM_WORDS = 20;
@@ -75,20 +66,8 @@ export function lineProblem(text: string, maxWords: number): string | null {
   return null;
 }
 
-/** Structured output: exactly three strings, in chapter order. */
-const QUESTION_FORMAT: Anthropic.Beta.BetaJSONOutputFormat = {
-  type: "json_schema",
-  schema: {
-    type: "object",
-    properties: {
-      chapter_one: { type: "string" },
-      chapter_two: { type: "string" },
-      finale: { type: "string" },
-    },
-    required: ["chapter_one", "chapter_two", "finale"],
-    additionalProperties: false,
-  },
-};
+/** Structured output for a tale's questions (the shared schema in questions.ts). */
+const QUESTION_FORMAT: Anthropic.Beta.BetaJSONOutputFormat = { type: "json_schema", schema: QUESTION_SCHEMA };
 
 export interface ClaudeConfig {
   apiKey: string;
@@ -344,29 +323,13 @@ export class Brain {
    * Throws when the model can't write them; the caller falls back to the fixed list.
    */
   async questions(recent: string[]): Promise<string[]> {
-    const ask = recent.length
-      ? `Write the three questions for a new tale. Make them fresh: don't reuse the originals, and don't reuse or closely echo any question this group has already answered:\n${
-        recent.map((q) => `- ${q}`).join("\n")
-      }`
-      : "Write the three questions for a new tale. Make them fresh: don't reuse the originals.";
     // One call per tale, and the rules matter more than speed here: a little more effort than chat lines.
-    const raw = await this.complete(QUESTION_PROMPT, ask, {
+    const raw = await this.complete(QUESTION_PROMPT, questionAsk(recent), {
       format: QUESTION_FORMAT,
       timeoutMs: QUESTION_TIMEOUT_MS,
       effort: "medium",
     });
-    let parsed: Record<string, unknown>;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      throw new Error(`Claude's questions weren't JSON: ${JSON.stringify(raw.slice(0, 80))}`);
-    }
-    // The originals never end in a question mark; keep the new ones the same.
-    const out = ["chapter_one", "chapter_two", "finale"].map((k) => cleanText(parsed[k], 90).replace(/\s*\?+$/, ""));
-    if (out.some((q) => q.length < 6)) {
-      throw new Error(`Claude's questions came back incomplete: ${JSON.stringify(out)}`);
-    }
-    return out;
+    return parseQuestions(raw, "Claude");
   }
 
   async vote(room: Room, msgs: Msg[]): Promise<number> {

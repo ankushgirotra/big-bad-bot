@@ -6,6 +6,7 @@ import { openGlobalKv } from "./kv.ts";
 import { GameError, type Msg, type Timing, viewFor } from "./game.ts";
 import { slugify, Store } from "./store.ts";
 import { KEYS } from "./keys.ts";
+import { Muse, type MuseConfig, museFirst } from "./muse.ts";
 import { Brain, type ClaudeConfig, WolfPack } from "./wolf.ts";
 
 export interface Config {
@@ -15,6 +16,8 @@ export interface Config {
   /** Multiplies every wolf delay. 1 feels human; tests use ~0.02. */
   wolfPace: number;
   claude: ClaudeConfig;
+  /** Tried first for each tale's questions, with Claude as the fallback. Left out: Claude only. */
+  muse?: MuseConfig;
   /** Use this KV instead of opening global-kv (tests). */
   kv?: Deno.Kv;
   quiet?: boolean;
@@ -38,6 +41,7 @@ export function configFromEnv(env: Pick<Deno.Env, "get"> = Deno.env): Config {
     // The key comes only from server/keys.ts, so a key in someone's shell never bills another account.
     // WOLF_MODEL picks haiku (the default), sonnet or opus.
     claude: { apiKey: KEYS.anthropic.trim(), model: env.get("WOLF_MODEL") ?? "", effort: "medium" },
+    muse: { apiKey: KEYS.muse.trim() },
   };
 }
 
@@ -79,7 +83,10 @@ export async function startServer(cfg: Config) {
   const opened = cfg.kv ? { kv: cfg.kv, where: "provided" } : await openGlobalKv();
   const kv = opened.kv;
   const brain = new Brain(cfg.claude);
-  const store = new Store(kv, cfg.timing, brain.problem, (recent) => brain.questions(recent));
+  // Each tale's questions: Muse when it can, otherwise Claude (and the fixed list if both fail).
+  const claudeQuestions = (recent: string[]) => brain.questions(recent);
+  const writeQuestions = cfg.muse ? museFirst(new Muse(cfg.muse), claudeQuestions) : claudeQuestions;
+  const store = new Store(kv, cfg.timing, brain.problem, writeQuestions);
   const pack = new WolfPack(store, brain, cfg.wolfPace);
   const streams = new Set<() => void>();
 

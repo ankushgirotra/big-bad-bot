@@ -98,17 +98,29 @@ on its own a few seconds later.
 
 ## The questions
 
-When the host leads the way into the woods, the same model that plays the wolf (`WOLF_MODEL`) writes that tale's three
-questions: two everyday warm-ups ("name the cursed item in your junk drawer") and a finale that dares everyone to prove
-they're human with a twist ("prove you're human without typing the letter e. go"). The prompt in `server/wolf.ts` hands
-it the original list in `server/cast.ts` as the style guide, and the questions come back as structured output (exactly
-three, in chapter order).
+When the host leads the way into the woods, a model writes that tale's three questions: two everyday warm-ups ("name the
+cursed item in your junk drawer") and a finale that dares everyone to prove they're human with a twist ("prove you're
+human without typing the letter e. go"). The prompt in `server/questions.ts` hands it the original list in
+`server/cast.ts` as the style guide, and the questions come back as structured output (exactly three, in chapter order).
+
+Who writes them, in order:
+
+1. **Meta's Muse** (`muse-spark-1.3`, key `KEYS.muse` in `server/keys.ts`), through the Meta Model API's
+   OpenAI-compatible chat endpoint at minimal reasoning: about 1.5–2s. This is the only part of the game that uses Muse.
+2. **Claude**, the model `WOLF_MODEL` picks, if Muse fails in any way (an error, no key, bad JSON, or no answer within
+   8s): about 4–6s on Haiku, with up to 12s.
+3. **The fixed list**, if Claude fails too (skipping questions this server has had).
+
+Every Muse attempt prints one line to the server's console:
+
+```
+No Muse service interruption detected. Using Muse Spark 1.3
+Muse Spark 1.3 service interruption detected, using fallback inference provider...
+```
 
 Each server remembers its last 30 questions, and the model is told not to repeat or echo them, so a group playing tale
-after tale keeps getting new ones. It's one call per tale, at medium effort: about 4–6s on Haiku, while the host's
-button reads _Writing the path…_. If the model fails or takes longer than 12s, the tale starts anyway with the fixed
-list (skipping questions this server has had), and the server logs why. No call is made unless the tale can actually
-start.
+after tale keeps getting new ones. The host's button reads _Writing the path…_ while they're written. No call is made
+unless the tale can actually start.
 
 ## Data: the shared `global-kv`
 
@@ -145,6 +157,8 @@ server/store.ts    rooms, messages, presence and typing in KV, under ["big-bad-b
 server/wolf.ts     the Claude Haiku brain, and the driver that decides when it speaks
 server/app.ts      HTTP routes and the SSE stream
 server/kv.ts       opens global-kv
+server/questions.ts the prompt and check for each tale's questions
+server/muse.ts     Meta's Muse, tried first for the questions
 server/keys.ts     every API key, committed on purpose
 server/cast.ts     disguises and questions
 public/            the two pages (index.html, game.html) and the storybook styles
