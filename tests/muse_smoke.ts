@@ -22,7 +22,14 @@ const msgs: Msg[] = [
   { id: "2", kind: "answer", seat: humans[0], text: "honestly nothing yet lol", at: 0, chapter: 0 },
   { id: "3", kind: "answer", seat: humans[1], text: "a gas station burrito i regret", at: 0, chapter: 0 },
 ];
+// Pretend the warm-up chat happened, so the wolf has a style to copy.
+room.warmup[players[1].id].push(
+  { from: "you", text: "lol idk man just vibing", at: 0 },
+  { from: "you", text: "nah thats wild tbh", at: 0 },
+);
 const me = castOf(room, room.wolfSeat);
+const warmT0 = performance.now();
+console.log(`warm-up (${Math.round(performance.now() - warmT0)}ms): ${await brain.warmLine(room, players[1].id)}`);
 console.log(`model ${cfg.muse.model} (${cfg.muse.effort}), the wolf is ${me.name} (${me.voice})\n`);
 
 for (

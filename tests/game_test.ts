@@ -3,9 +3,11 @@ import {
   castOf,
   castVote,
   computeTells,
+  deliverable,
   type Draft,
   majority,
   mentions,
+  type Msg,
   newPlayer,
   newRoom,
   proceed,
@@ -15,11 +17,16 @@ import {
   start,
   tick,
   viewFor,
+  warmReady,
+  warmReply,
+  warmSamples,
+  warmSay,
 } from "../server/game.ts";
 import { slugify } from "../server/store.ts";
-import { tidy } from "../server/wolf.ts";
+import { anchorLines, driftWeight, effortFor, tidy } from "../server/wolf.ts";
+import { describe, profile, restyle } from "../server/style.ts";
 
-const T = { answerMs: 60_000, discussMs: 75_000, voteMs: 45_000 };
+const T = { warmupMs: 120_000, answerMs: 60_000, discussMs: 75_000, voteMs: 45_000 };
 
 function assert(cond: unknown, msg = "assertion failed"): asserts cond {
   if (!cond) throw new Error(msg);
@@ -50,7 +57,15 @@ function room(players = 3): Room {
   return r;
 }
 
+/** A tale at the start of chapter one: the warm-up chat has run its course. */
 function begun(players = 3): Room {
+  const r = warming(players);
+  tick(r, r.deadline!, T);
+  return r;
+}
+
+/** A tale just started, in the warm-up chat. */
+function warming(players = 3): Room {
   const r = room(players);
   start(r, true, 1_000, T, rng());
   return r;
@@ -69,7 +84,7 @@ Deno.test("start seats every player once, plus exactly one wolf", () => {
   eq(new Set(r.seats.map((s) => s.cast)).size, 5, "distinct disguises");
   eq(r.questions.length, 3);
   eq(r.questions[2], "prove you're human. go.");
-  eq(r.deadline, 1_000 + T.answerMs);
+  eq(r.deadline, 1_000 + T.warmupMs! + T.answerMs);
 });
 
 Deno.test("only the host starts, and not alone", () => {
@@ -232,4 +247,178 @@ Deno.test("slugify and tidy", () => {
   eq(slugify("  --Café  Nuit-- "), "cafe-nuit");
   eq(tidy('"Dev: BRO I had tacos — like four"', "Dev"), "BRO I had tacos, like four");
   eq(tidy("maya (you): lol", "maya"), "lol");
+});
+
+Deno.test("start opens the warm-up: each player gets a private opener from the wolf", () => {
+  const r = warming(3);
+  eq([r.phase, r.chapter, r.deadline], ["warmup", -1, 1_000 + T.warmupMs]);
+  eq(Object.keys(r.warmup).sort(), r.players.map((p) => p.id).sort());
+  for (const lines of Object.values(r.warmup)) eq(lines.map((l) => l.from), ["wolf"]);
+  throwsStatus(() => say(r, humanSeats(r)[0], "hi", 2_000, T), 409);
+});
+
+Deno.test("warm-up chat: one line at a time, five lines, and the last reply ends it for everyone", () => {
+  const r = warming(2);
+  const [a, b] = r.players.map((p) => p.id);
+  warmSay(r, a, "  hey whats up ", 2_000);
+  eq(r.warmup[a].at(-1)?.text, "hey whats up");
+  throwsStatus(() => warmSay(r, a, "again", 2_100), 409); // the wolf hasn't answered
+  throwsStatus(() => warmSay(r, "nobody", "hi", 0), 403);
+  throwsStatus(() => warmSay(r, b, "   ", 0), 400);
+  for (let i = 0; i < 5; i++) {
+    if (i > 0) warmSay(r, a, `line ${i}`, 2_200 + i);
+    eq(warmReply(r, a, "ha ok", 2_300 + i, T), [], "b is still chatting");
+  }
+  throwsStatus(() => warmSay(r, a, "one more", 3_000), 409);
+  eq(r.phase, "warmup", "a is done but b isn't");
+  warmSay(r, b, "hi", 3_100);
+  throwsStatus(() => warmReady(r, b, 3_200, T), 409); // not enough to learn from yet
+  eq(r.ready, []);
+});
+
+Deno.test("warm-up ends early once everyone is ready, and on its candle", () => {
+  const r = warming(2);
+  const [a, b] = r.players.map((p) => p.id);
+  for (const id of [a, b]) {
+    for (let i = 0; i < 3; i++) {
+      warmSay(r, id, `msg ${i}`, 2_000);
+      warmReply(r, id, "ok", 2_000, T);
+    }
+  }
+  eq(warmReady(r, a, 3_000, T), []);
+  eq(r.phase, "warmup");
+  const out = warmReady(r, b, 3_100, T);
+  eq([r.phase, r.chapter], ["answer", 0]);
+  eq(out.at(-1)?.kind, "chap");
+  eq(warmSamples(r).length, 6);
+
+  const late = warming(2);
+  eq(tick(late, 1_000, T), null);
+  tick(late, late.deadline!, T);
+  eq([late.phase, late.chapter], ["answer", 0], "the candle moves everyone on");
+});
+
+Deno.test("a warm-up chat is private to its player", () => {
+  const r = warming(2);
+  const [a, b] = r.players;
+  warmSay(r, a.id, "secret sauce", 2_000);
+  const online = new Set([a.id, b.id]);
+  const mine = viewFor(r, a.id, online, [], 0);
+  const theirs = viewFor(r, b.id, online, [], 0);
+  eq(mine.warm?.lines.map((l) => l.text).includes("secret sauce"), true);
+  assert(!JSON.stringify(theirs).includes("secret sauce"), "b can see a's chat");
+  tick(r, r.deadline!, T);
+  eq(viewFor(r, a.id, online, [], 0).warm, null, "no chat after the warm-up");
+});
+
+Deno.test("style: measured from messages, described, and applied to scripted lines", () => {
+  eq(profile([]), null);
+  const lazy = profile(["lol idk man", "nah same", "tbh no clue lol"])!;
+  assert(lazy.lowercase === 1 && lazy.bare === 1 && lazy.avgWords <= 3.5);
+  eq(lazy.slang.slice(0, 2), ["lol", "idk"]);
+  assert(describe(lazy).some((d) => d.includes("almost never capitalizes")));
+  eq(
+    restyle(lazy, "I had oatmeal for breakfast and a delicious turkey sandwich for lunch!"),
+    "i had oatmeal for breakfast",
+  );
+  const loud = profile(["Hey!! That is SO good!", "Wow! Amazing!"])!;
+  eq(restyle(loud, "that was fine."), "that was fine!");
+  const fun = profile(["pizza 😂", "no way 😂 lol"])!;
+  eq(restyle(fun, "fair enough"), "fair enough 😂");
+  eq(restyle(null, "Unchanged."), "Unchanged.");
+  eq(restyle(profile(["one"]), "Unchanged."), "Unchanged.", "one sample isn't a style");
+});
+
+Deno.test("the wolf starts on one player's style and drifts toward the group's, chapter by chapter", () => {
+  const r = warming(3);
+  const [a, b] = r.players.map((p) => p.id);
+  r.warmup[a].push({ from: "you", text: "lol idk man", at: 0 });
+  r.warmup[b].push({ from: "you", text: "I think that sounds great, thank you.", at: 0 });
+  const first = anchorLines(r);
+  assert(first.length === 1 && (first[0] === "lol idk man" || first[0].startsWith("I think")), "anchors on one player");
+  eq(anchorLines(r), first, "the anchor holds for the whole tale");
+  eq(driftWeight(r, 10), 0, "no drift during the warm-up");
+  tick(r, r.deadline!, T);
+  eq(driftWeight(r, 1), 0, "nothing to drift toward yet");
+  const ws = [0, 1, 2].map((ch) => {
+    r.chapter = ch;
+    return driftWeight(r, 5);
+  });
+  assert(ws[0] > 0 && ws[0] < ws[1] && ws[1] < ws[2], `drift grows: ${ws}`);
+  r.phase = "vote";
+  assert(driftWeight(r, 5) > ws[2]);
+});
+
+Deno.test("careful styles get more reasoning than casual ones", () => {
+  const casual = profile(["lol idk", "nah same", "tbh no clue"]);
+  const careful = profile([
+    "I think that sounds like a really good plan for the weekend.",
+    "Honestly, I would rather stay in and finish my reading.",
+  ]);
+  eq(effortFor(null, "low"), "low");
+  eq(effortFor(casual, "low"), "low");
+  eq(effortFor(careful, "low"), "high");
+  eq(effortFor(profile(["Yeah sure.", "ok cool", "Not really."]), "low"), "medium");
+});
+
+const answerMsg = (seat: number, at: number, chapter = 0): Msg => ({
+  id: `id${at}`,
+  kind: "answer",
+  seat,
+  text: `answer from ${seat}`,
+  at,
+  chapter,
+});
+
+Deno.test("answers stay hidden until the chapter closes; your own shows at once", () => {
+  const r = begun(3);
+  const [a, b, c] = humanSeats(r);
+  const batch = [answerMsg(b, 100), answerMsg(a, 200), answerMsg(c, 300)];
+  const sent = new Set<string>();
+  const first = deliverable(r, a, batch, sent);
+  eq(first.msgs.map((m) => m.seat), [a], "a sees only their own while it's open");
+  eq(first.upTo, undefined, "the cursor can't pass b's held answer");
+  eq(deliverable(r, a, batch, sent).msgs, [], "nothing is delivered twice");
+
+  r.phase = "discuss";
+  const rest = deliverable(r, a, batch, sent);
+  eq(rest.msgs.map((m) => m.seat).sort(), [b, c].sort(), "the rest arrive once it closes, a's not repeated");
+  eq(rest.upTo, "id300");
+  for (const m of rest.msgs) eq(m.at, 0, "no timestamp");
+  assert(rest.msgs.every((m) => !/^id\d/.test(m.id)), "no time-ordered id");
+});
+
+Deno.test("revealed answers aren't in submission order, and every viewer sees the same order", () => {
+  let differs = false;
+  for (let game = 1; game <= 20 && !differs; game++) {
+    const r = begun(6);
+    r.game = game;
+    r.phase = "discuss";
+    const seats = humanSeats(r);
+    const batch = seats.map((s, i) => answerMsg(s, 100 + i));
+    const viewer = r.seats.length; // not any seat: sees everyone's
+    const order = deliverable(r, viewer, batch, new Set()).msgs.map((m) => m.seat);
+    eq(order, deliverable(r, viewer, batch, new Set()).msgs.map((m) => m.seat), "stable");
+    eq([...order].sort(), [...seats].sort());
+    if (JSON.stringify(order) !== JSON.stringify(seats)) differs = true;
+  }
+  assert(differs, "never reordered");
+});
+
+Deno.test("while answering, views hide who has answered and who is typing", () => {
+  const r = begun(3);
+  const [a, b] = r.players;
+  const [sa, sb] = [seatOf(r, a.id), seatOf(r, b.id)];
+  say(r, sb, "hello", 2_000, T);
+  const online = new Set(r.players.map((p) => p.id));
+  const v = viewFor(r, a.id, online, [sb, r.wolfSeat], 0);
+  assert(v.seats.every((s) => !s.typing), "no typing during answers");
+  assert(v.seats.every((s) => !s.answered), "b's answer isn't flagged");
+  eq(v.counts.answered, 1, "the count is still shown");
+  say(r, sa, "mine", 2_100, T);
+  eq(viewFor(r, a.id, online, [], 0).seats[sa].answered, true, "you can see your own");
+  say(r, humanSeats(r).find((x) => x !== sa && x !== sb)!, "third", 2_200, T);
+  say(r, r.wolfSeat, "wolf", 2_300, T);
+  eq(r.phase, "discuss");
+  assert(viewFor(r, a.id, online, [sb], 0).seats[sb].typing, "typing is back once the answers are out");
 });

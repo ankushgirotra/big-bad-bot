@@ -13,11 +13,14 @@ wolf and it's _Happily Ever After_; name a friend and it's _The End_.
    tale. Open servers are listed.
 2. **The game** (`/game?server=…`): the first player in is the host. Once at least two friends are at the cottage, the
    host leads the way into the woods.
-3. **Three chapters.** Everyone answers the chapter's question (60s). Then the group talks it over (75s): tap _question
+3. **The warm-up** (up to 2 minutes). Before the path begins, each player has a private chat with the wolf. Talk like
+   you normally text (up to 5 messages; _I'm ready_ appears after 3). The wolf measures your style (casing, punctuation,
+   length, slang, emoji) and writes like the group for the rest of the tale. Nobody else sees your chat.
+4. **Three chapters.** Everyone answers the chapter's question (60s). Then the group talks it over (75s): tap _question
    …_ to call someone out by name. _Onward_ moves to the next chapter; the host moves it at once, anyone else needs a
    majority. _Name the wolf early_ skips ahead to the vote the same way.
-4. **The vote** (45s). The wolf only loses if it gets strictly the most votes. A tie lets it slip away.
-5. **The reveal** shows the real names, the votes, and what gave the wolf away (answer speed, message length, how often
+5. **The vote** (45s). The wolf only loses if it gets strictly the most votes. A tie lets it slip away.
+6. **The reveal** shows the real names, the votes, and what gave the wolf away (answer speed, message length, how often
    it was called out). _Read it again_ starts a new tale with a new wolf.
 
 Up to 7 friends play at once (8 disguises, one of them the wolf's). Refreshing or reopening the page puts you back in
@@ -62,7 +65,14 @@ never uses the `-contributor` models, which let Meta train on the chat. Without 
 falls back to the scripted lines from the original design.
 
 The wolf waits and types like a person: it answers mid-pack, replies when someone names it, sometimes jumps into the
-discussion, and votes with the crowd. `WOLF_PACE=0.2` speeds it up for testing.
+discussion, and votes with the crowd. `WOLF_PACE=0.2` speeds it up for testing. `WARMUP_SECONDS` (default 120) sets the
+warm-up candle.
+
+The wolf picks one player's warm-up style to start with (a different one each tale), then drifts toward the whole
+group's live style a little each chapter (20% → 50% → 80%, 90% at the vote), so nobody can spot the moment it switched.
+`server/style.ts` measures the habits; they go into the prompt with a few real lines. Reasoning effort follows the style
+it's aiming at: casual (lowercase, short, slangy) stays at `MUSE_REASONING_EFFORT`, careful styles get `medium` or
+`high`. The scripted wolf bends its canned lines toward the same target (lowercase, no final period, emoji, shorter).
 
 ## Data: the shared `global-kv`
 

@@ -78,7 +78,7 @@ Deno.test({
     const app = await startServer({
       port: 0,
       hostname: "127.0.0.1",
-      timing: { answerMs: 6_000, discussMs: 6_000, voteMs: 6_000 },
+      timing: { warmupMs: 20_000, answerMs: 6_000, discussMs: 6_000, voteMs: 6_000 },
       wolfPace: 0.02,
       muse: { apiKey: "", baseUrl: "", model: "", effort: "" },
       kv,
@@ -123,7 +123,31 @@ Deno.test({
 
       assert((await act(bea, "start")).status === 403, "only the host starts");
       assert((await act(host, "start")).status === 200);
+      for (const c of clients) await c.until("the warm-up", (v) => v.phase === "warmup");
+
+      // ---- the warm-up: a private chat with the wolf, in the player's own style
+      assert((await act(bea, "say", { text: "hi" })).status === 409, "no public chat during the warm-up");
+      for (const c of clients) {
+        assert(c.view!.warm!.lines.length === 1 && c.view!.warm!.lines[0].from === "wolf", "the wolf opens");
+      }
+      for (let i = 1; i <= 5; i++) {
+        for (const c of clients) {
+          const r = await act(c, "warm", { text: `lol ${c.name.toLowerCase()} said thing ${i}` });
+          assert(r.status === 200, `warm: ${JSON.stringify(r.data)}`);
+        }
+        if (i < 5) {
+          for (const c of clients) {
+            await c.until(`the wolf's reply ${i}`, (v) => v.phase === "warmup" && v.warm!.lines.length === 2 * i + 1);
+          }
+        }
+      }
       for (const c of clients) await c.until("chapter one", (v) => v.phase === "answer" && v.chapter === 0);
+      for (const c of clients) assert(c.view!.warm === null, "the chat is gone once the path begins");
+      const mid = (await app.store.room("grandmas-house"))!;
+      for (const p of mid.players) {
+        assert(mid.warmup[p.id].length === 11, `${p.name}'s chat: ${mid.warmup[p.id].length} lines`);
+        assert(mid.warmup[p.id].at(-1)!.from === "wolf", "the wolf had the last word");
+      }
 
       const late = await post("/api/join", { server: "grandmas-house", name: "Dee" });
       assert(late.status === 409, "no joining mid-tale");

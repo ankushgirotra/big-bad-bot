@@ -29,6 +29,25 @@ export function castById(id: string): CastMember {
   return c;
 }
 
+/** How the wolf opens each player's private warm-up chat. */
+export const WARMUP_OPENERS = [
+  "hey, so what do you usually do on a saturday?",
+  "hi! before we start, tell me what you had for lunch",
+  "hey you. how's your day going so far",
+  "ok quick, what's the last thing you watched",
+  "yo, what are you up to right now",
+];
+
+/** The scripted wolf's warm-up replies, restyled to the player's own way of texting. */
+export const WARMUP_REPLIES = [
+  "ha, fair. what's your go-to snack?",
+  "nice. do you text people back fast or leave them on read",
+  "ok ok. what's the last thing that made you laugh",
+  "same honestly. any plans this weekend?",
+  "good one. what's your phone's battery at rn",
+  "ha. and what do you do when you can't sleep",
+];
+
 export const CHAPTERS = ["Chapter the First", "Chapter the Second", "Chapter the Third"];
 
 /** The third chapter always ends on the design's closing question. */

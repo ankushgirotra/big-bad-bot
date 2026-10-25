@@ -3,7 +3,7 @@
 
 import { CAST } from "./cast.ts";
 import { openGlobalKv } from "./kv.ts";
-import { GameError, type Msg, type Timing, viewFor } from "./game.ts";
+import { deliverable, GameError, type Msg, seatOf, type Timing, viewFor } from "./game.ts";
 import { slugify, Store } from "./store.ts";
 import { Brain, type MuseConfig, WolfPack } from "./wolf.ts";
 
@@ -28,6 +28,7 @@ export function configFromEnv(env: Pick<Deno.Env, "get"> = Deno.env): Config {
     port: num("PORT", 8000),
     hostname: env.get("HOST") || "0.0.0.0",
     timing: {
+      warmupMs: num("WARMUP_SECONDS", 120) * 1000,
       answerMs: num("ANSWER_SECONDS", 60) * 1000,
       discussMs: num("DISCUSS_SECONDS", 75) * 1000,
       voteMs: num("VOTE_SECONDS", 45) * 1000,
@@ -95,6 +96,7 @@ export async function startServer(cfg: Config) {
     let closed = false;
     let game = -1;
     let cursor: string | undefined;
+    const sent = new Set<string>();
     let reader: ReadableStreamDefaultReader<unknown> | undefined;
     let tickTimer: ReturnType<typeof setTimeout> | undefined;
     let beat: ReturnType<typeof setInterval> | undefined;
@@ -127,8 +129,10 @@ export async function startServer(cfg: Config) {
       }
       const reset = room.game !== game;
       if (reset) [game, cursor] = [room.game, undefined];
-      const msgs: Msg[] = await store.messages(slug, room.game, cursor);
-      if (msgs.length) cursor = msgs[msgs.length - 1].id;
+      if (reset) sent.clear();
+      const batch: Msg[] = await store.messages(slug, room.game, cursor);
+      const { msgs, upTo } = deliverable(room, seatOf(room, me.id), batch, sent);
+      if (upTo) cursor = upTo;
       const [online, typing] = await Promise.all([store.online(slug), store.typingSeats(slug)]);
       online.add(player.id);
       send("view", { view: viewFor(room, me.id, online, typing, Date.now()), msgs, reset });
