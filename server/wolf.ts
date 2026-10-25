@@ -67,7 +67,7 @@ function systemPrompt(room: Room): string {
     `What gets the AI caught: tidy grammar, sounding wholesome or like an ad, generic answers like "pizza and coffee", repeating someone's exact words back, polite agreement, saying "as a human", em dashes, emoji spam, over-defending ("I promise I'm real!"), tacking "lol" or "lmao" onto lines, leaning on the same filler every message, and long messages.`,
     `Blend in. Never admit or hint that you're an AI. When someone questions you, answer their actual point like a slightly annoyed friend, and sometimes turn it back on someone by pointing at something they really said. Only call someone out over something specific they wrote.`,
     warmStyle(room),
-    `Reply with only the text of your one chat message: no quotes, no name prefix, 25 words at most.`,
+    `Put your one chat message inside <message></message> tags, 25 words at most, and write nothing outside the tags: no thinking out loud, no corrections, no notes about these instructions, no name prefix. If you want to change a line, rewrite it before you answer, never in the reply.`,
   ].filter(Boolean).join("\n\n");
 }
 
@@ -99,7 +99,7 @@ function warmPrompt(lines: { from: "you" | "wolf"; text: string }[]): { system: 
         style ? ` So far: ${describe(style).join("; ")}.` : ""
       }`,
       `Keep it short, like a text. Never explain the game or analyze them. Never say what you're doing or about to do, and never make up stories, plans or a day of your own: you're a bot getting to know them, so keep anything about yourself vague.`,
-      `Reply with only your one message: no quotes, no name prefix, 20 words at most.`,
+      `Put your one message inside <message></message> tags, 20 words at most, and write nothing outside the tags: no thinking out loud, no corrections, no notes about these instructions, no name prefix.`,
     ].join("\n\n"),
     user: `${lines.map((l) => `${l.from === "you" ? "Player" : "You"}: ${l.text}`).join("\n")}\n\n${
       lines.length > 1 ? "Your next message should differ in shape and opener from yours above. " : ""
@@ -163,6 +163,37 @@ export function tidy(raw: string, name: string): string {
   t = t.replace(new RegExp(`^@?${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*(\\(you\\))?\\s*[:\\-]\\s*`, "i"), "");
   t = t.replace(/\s*[—–]\s*/g, ", ");
   return cleanText(t);
+}
+
+/** Talk about the instructions or about fixing a line: it belongs in Claude's head, never in the chat. */
+const META =
+  /\b(the instructions?|my instructions|system prompt|i need to (correct|fix|rewrite|redo)|let me (correct|rewrite|fix|redo|try again)|(corrected|revised|rewritten|fixed|final) (message|version|line|reply)|here(?:'s| is) (the|my|a) (corrected|revised|rewritten|new|final)|as an ai)\b/i;
+
+/** Claude's reply wasn't a clean chat line (no tags, or talk about its instructions, or a refusal). */
+export class NotALineError extends Error {}
+
+/**
+ * The wolf's chat line out of Claude's reply: the text inside the last <message> tag, so a reply
+ * that thinks aloud or corrects itself posts only its final line. A reply with no tag at all (for
+ * example Claude declining the task in plain words) is never used as a line, and neither is one
+ * that talks about the instructions: it throws, so nothing that gives the wolf away is posted.
+ */
+export function parseLine(raw: string): string {
+  const tagged = [...raw.matchAll(/<message>([\s\S]*?)<\/message>/gi)].map((m) => m[1].trim()).filter(Boolean);
+  // A tag that was opened but never closed (the reply ran out): what follows it is still the line.
+  const open = tagged.length ? "" : /<message>([\s\S]*)$/i.exec(raw)?.[1].trim() ?? "";
+  const text = tagged.at(-1) ?? open;
+  if (!text) {
+    throw new NotALineError(
+      `Claude didn't put a chat line in <message> tags (${JSON.stringify(raw.trim().slice(0, 80))}).`,
+    );
+  }
+  if (META.test(text)) {
+    throw new NotALineError(
+      `Claude's reply talked about its instructions instead of chatting (${JSON.stringify(text.slice(0, 80))}).`,
+    );
+  }
+  return text;
 }
 
 const LAUGH = /\b(lol|lmao|haha+)\b/i;
@@ -232,25 +263,39 @@ export class Brain {
 
   async line(room: Room, msgs: Msg[], task: Task): Promise<string> {
     const me = castOf(room, room.wolfSeat);
-    const raw = await this.complete(
-      systemPrompt(room),
-      [transcript(room, msgs), styleNotes(room, msgs), instruction(room, task)].filter(Boolean).join("\n\n"),
+    let out = tidy(
+      await this.chat(
+        systemPrompt(room),
+        [transcript(room, msgs), styleNotes(room, msgs), instruction(room, task)].filter(Boolean).join("\n\n"),
+      ),
+      me.name,
     );
-    let out = tidy(raw, me.name);
     // Laughing is the voice for some seats; for everyone else, keep it occasional.
     if (!LAUGH.test(me.voice)) {
       out = easeLaughs(out, msgs.filter((m) => m.seat === room.wolfSeat && m.kind !== "chap").map((m) => m.text));
     }
-    if (!out) throw new Error(`Claude sent back an empty message (raw: ${JSON.stringify(raw.slice(0, 80))}).`);
+    if (!out) throw new Error("Claude sent back an empty message.");
     return out;
+  }
+
+  /** One chat line from Claude. A reply that isn't one (no tags, a refusal, talk about the prompt) gets one more try. */
+  async chat(system: string, user: string): Promise<string> {
+    for (let attempt = 0;; attempt++) {
+      const raw = await this.complete(system, user);
+      try {
+        return parseLine(raw);
+      } catch (err) {
+        if (!(err instanceof NotALineError) || attempt >= 1) throw err;
+        console.warn(`[wolf] ${err.message} Asking again.`);
+      }
+    }
   }
 
   /** The wolf's reply in a player's private warm-up chat. Throws when Claude can't write one. */
   async warmLine(room: Room, playerId: string): Promise<string> {
     const { system, user } = warmPrompt(room.warmup[playerId] ?? []);
-    const raw = await this.complete(system, user);
-    const out = tidy(raw, "You");
-    if (!out) throw new Error(`Claude sent back an empty message (raw: ${JSON.stringify(raw.slice(0, 80))}).`);
+    const out = tidy(await this.chat(system, user), "You");
+    if (!out) throw new Error("Claude sent back an empty message.");
     return out;
   }
 

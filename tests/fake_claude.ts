@@ -31,7 +31,7 @@ export function fakeClaude(): FakeClaude {
     // A vote names the first other seat from the system prompt; anything else is a plain line.
     const text = user.includes("Voting time")
       ? /The other seats: ([^ (]+)/.exec(system)![1]
-      : "ok fair mine was kinda boring too";
+      : "<message>ok fair mine was kinda boring too</message>";
     return Response.json({
       id: `msg_fake_${fake.calls}`,
       type: "message",

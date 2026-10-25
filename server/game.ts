@@ -459,6 +459,45 @@ export function computeTells(room: Room, msgs: Msg[]): string[] {
   return tells;
 }
 
+// ---- hiding answers until the chapter closes -------------------------------------
+
+const hash = (s: string) => {
+  let h = 2166136261;
+  for (const c of s) h = Math.imul(h ^ c.charCodeAt(0), 16777619) >>> 0;
+  return h;
+};
+
+/**
+ * What a player's stream may deliver from a batch of new messages. While a chapter's
+ * question is open, other seats' answers are held back; once everyone has answered
+ * (or the candle burns out) they arrive together, in an order that says nothing about
+ * who was first, with the timing stripped. Your own answer shows at once.
+ *
+ * `sent` is the ids already delivered; `upTo` is how far the stream's cursor may
+ * safely advance (never past a held answer, so those are picked up later).
+ */
+export function deliverable(
+  room: Room,
+  seat: number,
+  batch: Msg[],
+  sent: Set<string>,
+): { msgs: Msg[]; upTo: string | undefined } {
+  const held = (m: Msg) =>
+    room.phase === "answer" && m.kind === "answer" && m.chapter === room.chapter && m.seat !== seat;
+  const firstHeld = batch.findIndex(held);
+  const upTo = (firstHeld < 0 ? batch : batch.slice(0, firstHeld)).at(-1)?.id;
+  const out = batch.filter((m) => !held(m) && !sent.has(m.id));
+  for (const m of out) sent.add(m.id);
+  // Answers revealed together are shuffled among their own slots.
+  const slots = out.flatMap((m, i) => (m.kind === "answer" && m.seat !== seat ? [i] : []));
+  const shuffled = slots.map((i) => out[i]).sort((a, b) =>
+    hash(`${room.game}:${a.chapter}:${a.seat}`) - hash(`${room.game}:${b.chapter}:${b.seat}`)
+  );
+  slots.forEach((slot, k) => (out[slot] = shuffled[k]));
+  // No timestamps or time-ordered ids on answers.
+  return { msgs: out.map((m) => (m.kind === "answer" ? { ...m, at: 0, id: `a${m.chapter}.${m.seat}` } : m)), upTo };
+}
+
 // ---- what one player is allowed to see -------------------------------------------
 
 /**
@@ -510,8 +549,9 @@ export function viewFor(room: Room, playerId: string, online: Set<string>, typin
         role: c.role,
         color: c.color,
         voice: c.voice,
-        answered: room.answered.includes(i),
-        typing: typing.includes(i),
+        // While a question is open, who has answered and who is typing would give away the order.
+        answered: room.phase === "answer" ? i === seat && room.answered.includes(i) : room.answered.includes(i),
+        typing: room.phase !== "answer" && typing.includes(i),
         ...(reveal
           ? {
             wolf: i === room.wolfSeat,
@@ -526,7 +566,8 @@ export function viewFor(room: Room, playerId: string, online: Set<string>, typin
       need: majority(here),
       onward: room.onward.length,
       early: room.early.length,
-      answered: room.answered.length,
+      // A running count would show when each answer came in.
+      answered: room.phase === "answer" ? 0 : room.answered.length,
       warmed: room.phase === "warmup"
         ? room.seats.filter((st) => st.playerId && warmupDone(room, st.playerId)).length
         : 0,

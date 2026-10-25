@@ -16,9 +16,11 @@ and it's _Happily Ever After_; name a friend and it's _The End_.
 3. **The warm-up** (up to 2 minutes). Before the path begins, each player has a private chat with the wolf. Talk like
    you normally text (up to 5 messages; _I'm ready_ appears after 3). The wolf measures your style (casing, punctuation,
    length, slang, emoji) and writes like the group for the rest of the tale. Nobody else sees your chat.
-4. **Three chapters.** Everyone answers the chapter's question (60s). Then the group talks it over (75s): tap _question
-   …_ to call someone out by name. _Onward_ moves to the next chapter; the host moves it at once, anyone else needs a
-   majority. _Name the wolf early_ skips ahead to the vote the same way.
+4. **Three chapters.** Everyone answers the chapter's question (60s). While it's open, nobody sees anyone else's answer,
+   who is typing, or how many are in: everyone just sees the same "everyone is writing…" animation, and the answers all
+   appear together (in a shuffled order) once the last one is in. Then the group talks it over (75s), live this time:
+   tap _question …_ to call someone out by name. _Onward_ moves to the next chapter; the host moves it at once, anyone
+   else needs a majority. _Name the wolf early_ skips ahead to the vote the same way.
 5. **The vote** (45s). The wolf only loses if it gets strictly the most votes. A tie lets it slip away.
 6. **The reveal** shows the real names, the votes, and what gave the wolf away (answer speed, message length, how often
    it was called out). _Read it again_ starts a new tale with a new wolf.

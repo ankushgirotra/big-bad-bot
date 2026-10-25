@@ -3,7 +3,7 @@
 
 import { CAST } from "./cast.ts";
 import { openGlobalKv } from "./kv.ts";
-import { GameError, type Msg, type Timing, viewFor } from "./game.ts";
+import { deliverable, GameError, type Msg, seatOf, type Timing, viewFor } from "./game.ts";
 import { slugify, Store } from "./store.ts";
 import { KEYS } from "./keys.ts";
 import { Brain, type ClaudeConfig, WolfPack } from "./wolf.ts";
@@ -93,6 +93,7 @@ export async function startServer(cfg: Config) {
     let closed = false;
     let game = -1;
     let cursor: string | undefined;
+    const sent = new Set<string>();
     let reader: ReadableStreamDefaultReader<unknown> | undefined;
     let tickTimer: ReturnType<typeof setTimeout> | undefined;
     let beat: ReturnType<typeof setInterval> | undefined;
@@ -125,8 +126,11 @@ export async function startServer(cfg: Config) {
       }
       const reset = room.game !== game;
       if (reset) [game, cursor] = [room.game, undefined];
-      const msgs: Msg[] = await store.messages(slug, room.game, cursor);
-      if (msgs.length) cursor = msgs[msgs.length - 1].id;
+      if (reset) sent.clear();
+      const batch: Msg[] = await store.messages(slug, room.game, cursor);
+      // Other players' answers are held back until the question closes (see deliverable()).
+      const { msgs, upTo } = deliverable(room, seatOf(room, me.id), batch, sent);
+      if (upTo) cursor = upTo;
       const [online, typing] = await Promise.all([store.online(slug), store.typingSeats(slug)]);
       online.add(player.id);
       const view = viewFor(room, me.id, online, typing, Date.now());

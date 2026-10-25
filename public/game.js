@@ -186,8 +186,20 @@ setInterval(updateClock, 250);
 function renderTyping() {
   const t = $('typing');
   t.classList.toggle('err', !!flash);
+  // While a question is open everyone sees the same animation, whoever has answered, so it
+  // can't give away who is quick: the server sends no typing or "answered" marks then either.
+  const crowd = !flash && !offline && V?.phase === 'answer';
+  if (!crowd) delete t.dataset.crowd;
   if (flash) return void (t.textContent = flash);
   if (offline) return void (t.textContent = 'the path went dark… finding it again');
+  if (crowd) {
+    const sig = others().map((s) => s.seat).join(',');
+    if (t.dataset.crowd !== sig) { // only rebuild when the cast changes, so the animation doesn't restart
+      t.dataset.crowd = sig;
+      t.innerHTML = `<span class="crowd">${others().map((s, i) => `<span class="who-typing" style="--d:${i * 0.23}s"><span class="seal mini" style="background:${s.color}">${esc(ini(s.name))}</span><span class="dots"><i></i><i></i><i></i></span></span>`).join('')}</span>everyone is writing…`;
+    }
+    return;
+  }
   if (V?.phase === 'warmup' && V.warm.lines.at(-1)?.from === 'you') return void (t.textContent = 'the wolf is writing…');
   const names = V ? V.seats.filter((s) => s.typing && s.seat !== mySeat()).map((s) => s.name) : [];
   t.textContent = names.length === 0 ? ''
@@ -278,8 +290,8 @@ function barFor(v) {
         };
       }
       return {
-        sig: `answer|${v.chapter}|done|${v.counts.answered}`,
-        html: `<div class="sys">the others are answering… ${v.counts.answered} of ${v.seats.length} have answered</div>`,
+        sig: `answer|${v.chapter}|done`,
+        html: `<div class="sys">your answer is in. the others will show theirs when everyone has answered.</div>`,
         bind() {},
       };
     case 'discuss': {

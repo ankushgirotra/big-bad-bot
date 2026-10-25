@@ -99,7 +99,15 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--gold);outline-o
 .chap small{display:block;font-family:var(--display);font-size:13px;letter-spacing:.14em;color:var(--gold)}
 .chap q{display:block;font-family:var(--tale);font-style:italic;font-size:23px;line-height:1.2;quotes:none;text-wrap:balance;margin-top:4px}
 .chap q::first-letter{color:var(--red);font-family:var(--display);font-style:normal;font-size:30px}
-.typing{font-family:var(--tale);font-style:italic;font-size:14px;color:var(--muted);min-height:20px}
+.typing{font-family:var(--tale);font-style:italic;font-size:14px;color:var(--muted);min-height:26px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.crowd{display:inline-flex;align-items:center;gap:10px}
+.who-typing{display:inline-flex;align-items:center;gap:4px}
+.seal.mini{width:22px;height:22px;font-size:11px;flex:none}
+.dots{display:inline-flex;gap:3px;padding:5px 7px;border-radius:10px;background:var(--cream);border:1px solid var(--edge)}
+.dots i{width:4px;height:4px;border-radius:50%;background:var(--muted);animation:bob 1.2s infinite ease-in-out;animation-delay:calc(var(--d,0s))}
+.dots i:nth-child(2){animation-delay:calc(var(--d,0s) + .15s)}
+.dots i:nth-child(3){animation-delay:calc(var(--d,0s) + .3s)}
+@keyframes bob{0%,60%,100%{transform:translateY(0);opacity:.35}30%{transform:translateY(-3px);opacity:1}}
 @keyframes ink{from{opacity:0;filter:blur(2px);transform:translateY(4px)}to{opacity:1;filter:none;transform:none}}
 
 .bar{border-top:1px solid var(--edge);padding-top:12px;display:flex;flex-direction:column;gap:9px}
@@ -129,7 +137,7 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--gold);outline-o
 .eye{animation:scan 3.2s ease-in-out infinite}
 .howl.hunt .eye{fill:var(--red)}
 @keyframes scan{0%,100%{transform:translateX(-8px)}50%{transform:translateX(8px)}}
-@media (prefers-reduced-motion:reduce){.eye,.msg,.end,.fly{animation:none}}
+@media (prefers-reduced-motion:reduce){.eye,.msg,.end,.fly,.dots i{animation:none}}
 
 /* ---- additions for the live game. Everything above is the original design, unchanged. ---- */
 /* countdown in the chat header (reuses .chat-h b / span type) */

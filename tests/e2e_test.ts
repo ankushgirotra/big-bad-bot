@@ -176,7 +176,24 @@ Deno.test({
 
       // ---- three chapters
       for (let ch = 0; ch < 3; ch++) {
+        if (ch === 0) {
+          // Answers stay hidden until everyone has answered: the host answers first, and neither
+          // the others' views nor their logs show it (or who typed, or how many are in) meanwhile.
+          assert((await act(host, "say", { text: "host answer 0" })).status === 200);
+          await new Promise((r) => setTimeout(r, 600)); // long enough for the wolf and the stream
+          for (const c of [bea, cy]) {
+            await c.until("a settled view", (v) => v.phase === "answer");
+            assert(!c.log.some((m) => m.kind === "answer"), `${c.name} saw an answer too early`);
+            assert(c.view!.seats.every((s) => !s.answered && !s.typing), `${c.name} saw who answered or typed`);
+            assert(c.view!.counts.answered === 0, `${c.name} saw a running count`);
+          }
+          assert(
+            host.log.some((m) => m.kind === "answer" && m.seat === host.view!.you.seat),
+            "you see your own at once",
+          );
+        }
         for (const c of clients) {
+          if (ch === 0 && c === host) continue; // already in
           const r = await act(c, "say", { text: `${c.name.toLowerCase()} answer ${ch}` });
           assert(r.status === 200, `answer: ${JSON.stringify(r.data)}`);
         }
@@ -184,6 +201,8 @@ Deno.test({
         for (const c of clients) await c.until(`discussion ${ch}`, (v) => v.phase === "discuss" && v.chapter === ch);
         const answers = host.log.filter((m) => m.kind === "answer" && m.chapter === ch);
         assert(answers.length === 4, `four answers in chapter ${ch}, got ${answers.length}`);
+        assert(answers.every((m) => m.at === 0), "no timestamps on answers");
+        assert(cy.log.filter((m) => m.kind === "answer" && m.chapter === ch).length === 4, "everyone gets all four");
         assert(answers.some((m) => m.seat === room.wolfSeat), "the wolf answered");
 
         if (ch === 1) {

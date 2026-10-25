@@ -3,9 +3,11 @@ import {
   castOf,
   castVote,
   computeTells,
+  deliverable,
   type Draft,
   majority,
   mentions,
+  type Msg,
   newPlayer,
   newRoom,
   proceed,
@@ -347,4 +349,68 @@ Deno.test("style: measured from what players wrote, described, and given to the 
   }
   const brief = warmStyle(r);
   assert(brief.includes("almost never capitalizes") && brief.includes("- nah same tbh"), brief);
+});
+
+const answerMsg = (seat: number, at: number, chapter = 0): Msg => ({
+  id: `id${at}`,
+  kind: "answer",
+  seat,
+  text: `answer from ${seat}`,
+  at,
+  chapter,
+});
+
+Deno.test("answers stay hidden until the chapter closes; your own shows at once", () => {
+  const r = begun(3);
+  const [a, b, c] = humanSeats(r);
+  const batch = [answerMsg(b, 100), answerMsg(a, 200), answerMsg(c, 300)];
+  const sent = new Set<string>();
+  const first = deliverable(r, a, batch, sent);
+  eq(first.msgs.map((m) => m.seat), [a], "a sees only their own while it's open");
+  eq(first.upTo, undefined, "the cursor can't pass b's held answer");
+  eq(deliverable(r, a, batch, sent).msgs, [], "nothing is delivered twice");
+
+  r.phase = "discuss";
+  const rest = deliverable(r, a, batch, sent);
+  eq(rest.msgs.map((m) => m.seat).sort(), [b, c].sort(), "the rest arrive once it closes, a's not repeated");
+  eq(rest.upTo, "id300");
+  for (const m of rest.msgs) eq(m.at, 0, "no timestamp");
+  assert(rest.msgs.every((m) => !/^id\d/.test(m.id)), "no time-ordered id");
+});
+
+Deno.test("revealed answers aren't in submission order, and every viewer sees the same order", () => {
+  let differs = false;
+  for (let game = 1; game <= 20 && !differs; game++) {
+    const r = begun(6);
+    r.game = game;
+    r.phase = "discuss";
+    const seats = humanSeats(r);
+    const batch = seats.map((s, i) => answerMsg(s, 100 + i));
+    const viewer = r.seats.length; // not any seat: sees everyone's
+    const order = deliverable(r, viewer, batch, new Set()).msgs.map((m) => m.seat);
+    eq(order, deliverable(r, viewer, batch, new Set()).msgs.map((m) => m.seat), "stable");
+    eq([...order].sort(), [...seats].sort());
+    if (JSON.stringify(order) !== JSON.stringify(seats)) differs = true;
+  }
+  assert(differs, "never reordered");
+});
+
+Deno.test("while answering, views hide who has answered, who is typing and how many are in", () => {
+  const r = begun(3);
+  const [a, b] = r.players;
+  const [sa, sb] = [seatOf(r, a.id), seatOf(r, b.id)];
+  say(r, sb, "hello", 2_000, T);
+  const online = new Set(r.players.map((p) => p.id));
+  const v = viewFor(r, a.id, online, [sb, r.wolfSeat], 0);
+  assert(v.seats.every((s) => !s.typing), "no typing during answers");
+  assert(v.seats.every((s) => !s.answered), "b's answer isn't flagged");
+  eq(v.counts.answered, 0, "no running count");
+  say(r, sa, "mine", 2_100, T);
+  eq(viewFor(r, a.id, online, [], 0).seats[sa].answered, true, "you can see your own");
+  say(r, humanSeats(r).find((x) => x !== sa && x !== sb)!, "third", 2_200, T);
+  say(r, r.wolfSeat, "wolf", 2_300, T);
+  eq(r.phase, "discuss");
+  const live = viewFor(r, a.id, online, [sb], 0);
+  assert(live.seats[sb].typing, "discussion is live: typing is visible again");
+  eq(live.counts.answered, 4, "and the count is back");
 });
