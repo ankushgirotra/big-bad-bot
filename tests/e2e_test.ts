@@ -7,6 +7,7 @@ import { castOf, type Msg, type View } from "../server/game.ts";
 import { NS } from "../server/kv.ts";
 import { fakeClaude } from "./fake_claude.ts";
 import { WOLF_MODELS } from "../server/wolf.ts";
+import { QUESTION_POOL } from "../server/cast.ts";
 
 function assert(cond: unknown, msg = "assertion failed"): asserts cond {
   if (!cond) throw new Error(msg);
@@ -159,6 +160,10 @@ Deno.test({
         assert(mid.warmup[p.id].length === 7, `${p.name}'s chat: ${mid.warmup[p.id].length} lines`);
         assert(mid.warmup[p.id].at(-1)!.from === "wolf", "the wolf had the last word");
       }
+      // The wolf's model wrote this tale's questions (question marks dropped, like the originals).
+      assert(host.view!.question === "weirdest thing in your fridge rn", `chapter one: ${host.view!.question}`);
+      const asked = claude.requests.filter((r) => (r.body.output_config as { format?: unknown })?.format);
+      assert(asked.length === 1 && asked[0].model === WOLF_MODELS.haiku.id, "one questions call, to the wolf's model");
 
       const late = await post("/api/join", { server: "grandmas-house", name: "Dee" });
       assert(late.status === 409, "no joining mid-tale");
@@ -201,6 +206,10 @@ Deno.test({
           for (const c of clients) await c.until(`chapter ${ch + 1}`, (v) => v.chapter === ch + 1);
         }
       }
+
+      // (re-read: the stream has moved on since the chapter-one check above)
+      const finale = host.view!.question as string | null;
+      assert(finale === "prove you're human using only a smell. go", `finale: ${finale}`);
 
       // ---- knock on grandma's door (a majority of two)
       await act(bea, "early");
@@ -304,7 +313,7 @@ Deno.test({
   async fn() {
     await twoFriends("test", async ({ host, guest, claude, act }) => {
       claude.failing = true;
-      assert((await act(host, "start")).status === 200);
+      assert((await act(host, "start")).status === 200, "a model that can't write questions doesn't stop the tale");
       for (const c of [host, guest]) await c.until("the warm-up", (v) => v.phase === "warmup");
       // The wolf can't answer in the warm-up chat: everyone is told why, and nothing stands in for it.
       assert((await act(host, "warm", { text: "hey" })).status === 200);
@@ -334,6 +343,8 @@ Deno.test({
         assert((await act(c, "ready")).status === 200);
       }
       await host.until("chapter one", (v) => v.phase === "answer");
+      // The questions call failed too, so the tale runs on the fixed list.
+      assert(QUESTION_POOL.includes(host.view!.question ?? ""), `fixed-list question: ${host.view?.question}`);
       for (const c of [host, guest]) await act(c, "say", { text: `${c.name} answer` });
       // With both friends in, the wolf tries again; this time Claude answers and the error goes away.
       const v = await host.until("the discussion", (v) => v.phase === "discuss");

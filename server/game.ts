@@ -54,6 +54,8 @@ export interface Room {
   phase: Phase;
   chapter: number;
   questions: string[];
+  /** The last tales' questions on this server, so new ones don't repeat them. Missing on older rooms. */
+  recentQuestions?: string[];
   chapterStarts: number[];
   phaseStartedAt: number;
   deadline: number | null;
@@ -120,6 +122,7 @@ export function newRoom(slug: string, host: Player, now: number): Room {
     phase: "lobby",
     chapter: -1,
     questions: [],
+    recentQuestions: [],
     chapterStarts: [],
     phaseStartedAt: now,
     deadline: null,
@@ -254,7 +257,25 @@ function endVote(room: Room, now: number): Draft[] {
 
 // ---- player actions -------------------------------------------------------------
 
-export function start(room: Room, isHost: boolean, now: number, t: Timing, rng = Math.random): Draft[] {
+/** How many past questions a server remembers (ten tales' worth). */
+export const RECENT_QUESTIONS = 30;
+
+/** Without written questions: two from the fixed list (ones this server hasn't had, when there are enough), then the finale. */
+export function pickQuestions(recent: string[], rng = Math.random): string[] {
+  const fresh = QUESTION_POOL.filter((q) => !recent.includes(q));
+  const pool = fresh.length >= CHAPTERS.length - 1 ? fresh : QUESTION_POOL;
+  return [...shuffle(pool, rng).slice(0, CHAPTERS.length - 1), LAST_QUESTION];
+}
+
+/** `questions`: the tale's three questions, if the model wrote them; otherwise they come from the fixed list. */
+export function start(
+  room: Room,
+  isHost: boolean,
+  now: number,
+  t: Timing,
+  rng = Math.random,
+  questions?: string[],
+): Draft[] {
   if (room.phase !== "lobby") throw new GameError("The tale has already begun.", 409);
   if (!isHost) throw new GameError("Only the host can lead the way into the woods.", 403);
   if (room.players.length < MIN_PLAYERS) {
@@ -264,7 +285,9 @@ export function start(room: Room, isHost: boolean, now: number, t: Timing, rng =
   const humans = shuffle(room.players.map((p) => p.id), rng);
   room.wolfSeat = Math.floor(rng() * cast.length);
   room.seats = cast.map((c, i) => ({ cast: c.id, playerId: i === room.wolfSeat ? null : humans.pop()! }));
-  room.questions = [...shuffle(QUESTION_POOL, rng).slice(0, CHAPTERS.length - 1), LAST_QUESTION];
+  const recent = room.recentQuestions ?? [];
+  room.questions = questions?.length === CHAPTERS.length ? questions : pickQuestions(recent, rng);
+  room.recentQuestions = [...recent, ...room.questions].slice(-RECENT_QUESTIONS);
   room.chapterStarts = [];
   room.votes = {};
   room.result = null;

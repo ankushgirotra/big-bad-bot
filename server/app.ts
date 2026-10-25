@@ -79,7 +79,7 @@ export async function startServer(cfg: Config) {
   const opened = cfg.kv ? { kv: cfg.kv, where: "provided" } : await openGlobalKv();
   const kv = opened.kv;
   const brain = new Brain(cfg.claude);
-  const store = new Store(kv, cfg.timing, brain.problem);
+  const store = new Store(kv, cfg.timing, brain.problem, (recent) => brain.questions(recent));
   const pack = new WolfPack(store, brain, cfg.wolfPace);
   const streams = new Set<() => void>();
 
