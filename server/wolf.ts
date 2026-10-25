@@ -62,10 +62,30 @@ function transcript(room: Room, msgs: Msg[]): string {
   return `The group chat so far:\n${lines.join("\n") || "(nothing yet)"}`;
 }
 
+/** How the humans in this room actually write, so the wolf copies them rather than a stereotype. */
+export function styleNotes(room: Room, msgs: Msg[]): string {
+  const said = msgs.filter((m) =>
+    (m.kind === "chat" || m.kind === "answer") && m.seat !== undefined && m.seat !== room.wolfSeat
+  );
+  if (!said.length) return "";
+  const words = said.map((m) => m.text.split(/\s+/).filter(Boolean).length).sort((a, b) => a - b);
+  const median = words[Math.floor(words.length / 2)];
+  const share = (f: (t: string) => boolean) => said.filter((m) => f(m.text)).length / said.length;
+  const lower = share((t) => t === t.toLowerCase());
+  const bare = share((t) => !/[.!?]$/.test(t));
+  const examples = said.slice(-8).map((m) => `${castOf(room, m.seat!).name}: ${m.text}`).join("\n");
+  return [
+    `How the real people here are writing (match this, it matters more than your seat's voice):`,
+    `- usually about ${median} word${median === 1 ? "" : "s"} a message, so keep yours around that length`,
+    `- ${Math.round(lower * 100)}% write all lowercase, ${Math.round(bare * 100)}% skip the final punctuation`,
+    `- their latest lines, for tone, slang and messiness (copy the feel, never the words):\n${examples}`,
+  ].join("\n");
+}
+
 function instruction(room: Room, task: Task): string {
   switch (task.type) {
     case "answer":
-      return `Answer this chapter's question now: "${task.question}"`;
+      return `Answer this chapter's question now: "${task.question}". If others already answered, answer the way they did: same length, same level of effort and detail.`;
     case "reply":
       return `${castOf(room, task.from).name} just said: "${task.text}". They're talking to you. Reply.`;
     case "chime":
@@ -129,7 +149,10 @@ export class Brain {
     if (this.live) {
       try {
         const out = tidy(
-          await this.complete(systemPrompt(room), `${transcript(room, msgs)}\n\n${instruction(room, task)}`),
+          await this.complete(
+            systemPrompt(room),
+            [transcript(room, msgs), styleNotes(room, msgs), instruction(room, task)].filter(Boolean).join("\n\n"),
+          ),
           castOf(room, room.wolfSeat).name,
         );
         if (out) return out;
