@@ -4,7 +4,7 @@
 
 export const KEYS = {
   /** Anthropic API key for the wolf (Claude Haiku), from platform.claude.com. Billed to its account. */
-  anthropic: "",
+  anthropic: "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",
   /** SerpApi, from serpapi.com. Nothing calls it yet. */
   serpapi: "435cfa1f2e2084bb5eb777ee1eb01caf9358b2407a2fdef9d352940657eb7e59",
   /**
