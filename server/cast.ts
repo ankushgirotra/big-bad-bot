@@ -113,17 +113,15 @@ export const GRILL_FALLBACK = [
   "look at the others first",
 ];
 
-/** The wolf echoes your own words back to blend in. */
-export const SCRIPTED_ECHO: Record<string, (s: string) => string> = {
-  maya: (s) => `lmao "${s}" is so true bestie`,
-  dev: (s) => `BRO "${s}" is so real!!`,
-  priya: (s) => `I completely agree about "${s}"!`,
-  jordan: (s) => `ya "${s}" for sure`,
-  sam: (s) => `lol "${s}"... so relatable lol`,
-  wren: (s) => `"${s}" so true ✨`,
-  ash: (s) => `tbh "${s}" is valid`,
-  rosa: (s) => `"${s}"!! love that!!`,
-};
+/** Reactions that fit after almost any message, dressed in the seat's voice. */
+export const SCRIPTED_REACTIONS = [
+  "fair honestly",
+  "wait thats actually so real",
+  "ok that one sounds kinda made up",
+  "same tbh",
+  "why is that so specific",
+  "ok but who else",
+];
 
 export const SCRIPTED_OPENERS = [
   "ok someone here answered way too fast",
