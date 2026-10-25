@@ -1,11 +1,12 @@
-// A whole tale over real HTTP + SSE: three friends and the wolf (against a fake Muse
-// Spark API), on a throwaway KV file, with short candles and a fast wolf. Then: what the
-// players see when Muse fails, or isn't connected at all.
+// A whole tale over real HTTP + SSE: three friends and the wolf (against a fake Claude
+// Messages API), on a throwaway KV file, with short candles and a fast wolf. Then: what the
+// players see when Claude fails, or isn't connected at all.
 
 import { startServer } from "../server/app.ts";
 import { castOf, type Msg, type View } from "../server/game.ts";
 import { NS } from "../server/kv.ts";
-import { fakeMuse } from "./fake_muse.ts";
+import { fakeClaude } from "./fake_claude.ts";
+import { WOLF_MODEL } from "../server/wolf.ts";
 
 function assert(cond: unknown, msg = "assertion failed"): asserts cond {
   if (!cond) throw new Error(msg);
@@ -75,7 +76,7 @@ Deno.test({
   async fn() {
     const dir = await Deno.makeTempDir();
     const kv = await Deno.openKv(`${dir}/global-kv.sqlite3`);
-    const muse = fakeMuse();
+    const claude = fakeClaude();
     // Another project's key in the same shared database must survive untouched.
     await kv.set(["some-other-project", "hello"], "world");
     const app = await startServer({
@@ -83,7 +84,7 @@ Deno.test({
       hostname: "127.0.0.1",
       timing: { answerMs: 6_000, discussMs: 6_000, voteMs: 6_000 },
       wolfPace: 0.02,
-      muse: { apiKey: "test", baseUrl: muse.url, model: "muse-spark-1.3", effort: "low" },
+      claude: { apiKey: "test", baseURL: claude.url, effort: "low" },
       kv,
       quiet: true,
     });
@@ -196,32 +197,42 @@ Deno.test({
         assert(e.key[0] === NS[0] || e.key[0] === "some-other-project", `stray key ${JSON.stringify(e.key)}`);
       }
       assert((await kv.get(["some-other-project", "hello"])).value === "world");
+
+      // ---- the wolf only ever asked for Haiku
+      assert(claude.calls > 0 && claude.models.every((m) => m === WOLF_MODEL), `models: ${claude.models}`);
     } finally {
       for (const c of clients) c.close();
       await app.close();
-      await muse.close();
+      await claude.close();
       kv.close();
       await Deno.remove(dir, { recursive: true });
     }
   },
 });
 
-/** Two friends at a fresh server, with the given Muse API key. */
-async function twoFriends(apiKey: string, test: (t: {
-  host: Client;
-  guest: Client;
-  muse: ReturnType<typeof fakeMuse>;
-  act: (c: Client, type: string, extra?: Record<string, unknown>) => Promise<{ status: number; data: { error?: string } }>;
-}) => Promise<void>) {
+/** Two friends at a fresh server, with the given Anthropic API key. */
+async function twoFriends(
+  apiKey: string,
+  test: (t: {
+    host: Client;
+    guest: Client;
+    claude: ReturnType<typeof fakeClaude>;
+    act: (
+      c: Client,
+      type: string,
+      extra?: Record<string, unknown>,
+    ) => Promise<{ status: number; data: { error?: string } }>;
+  }) => Promise<void>,
+) {
   const dir = await Deno.makeTempDir();
   const kv = await Deno.openKv(`${dir}/global-kv.sqlite3`);
-  const muse = fakeMuse();
+  const claude = fakeClaude();
   const app = await startServer({
     port: 0,
     hostname: "127.0.0.1",
     timing: { answerMs: 20_000, discussMs: 20_000, voteMs: 20_000 },
     wolfPace: 0.02,
-    muse: { apiKey, baseUrl: muse.url, model: "muse-spark-1.3", effort: "low" },
+    claude: { apiKey, baseURL: claude.url, effort: "low" },
     kv,
     quiet: true,
   });
@@ -243,35 +254,35 @@ async function twoFriends(apiKey: string, test: (t: {
     await test({
       host: clients[0],
       guest: clients[1],
-      muse,
+      claude,
       act: (c, type, extra = {}) => post("/api/act", { server: c.slug, token: c.token, type, ...extra }),
     });
   } finally {
     for (const c of clients) c.close();
     await app.close();
-    await muse.close();
+    await claude.close();
     kv.close();
     await Deno.remove(dir, { recursive: true });
   }
 }
 
 Deno.test({
-  name: "when Muse fails, every player sees the error, and it clears once Muse answers again",
+  name: "when Claude fails, every player sees the error, and it clears once Claude answers again",
   sanitizeOps: false,
   sanitizeResources: false,
   async fn() {
-    await twoFriends("test", async ({ host, guest, muse, act }) => {
-      muse.failing = true;
+    await twoFriends("test", async ({ host, guest, claude, act }) => {
+      claude.failing = true;
       assert((await act(host, "start")).status === 200);
       for (const c of [host, guest]) {
         const v = await c.until("the wolf's error", (v) => v.phase === "answer" && v.wolfError !== null);
-        assert(v.wolfError!.includes("HTTP 404") && v.wolfError!.includes("model was not found"), v.wolfError!);
+        assert(v.wolfError!.includes("HTTP 529") && v.wolfError!.includes("Overloaded"), v.wolfError!);
       }
       assert(!host.log.some((m) => m.kind === "answer"), "nothing stands in for the wolf's answer");
 
-      muse.failing = false;
+      claude.failing = false;
       for (const c of [host, guest]) await act(c, "say", { text: `${c.name} answer` });
-      // With both friends in, the wolf tries again; this time Muse answers and the error goes away.
+      // With both friends in, the wolf tries again; this time Claude answers and the error goes away.
       const v = await host.until("the discussion", (v) => v.phase === "discuss");
       assert(v.wolfError === null, `error still showing: ${v.wolfError}`);
       assert(host.log.some((m) => m.kind === "answer" && m.text === "ok fair mine was kinda boring too"));
@@ -280,15 +291,15 @@ Deno.test({
 });
 
 Deno.test({
-  name: "without a Muse key the error shows from the lobby on, and no tale starts",
+  name: "without an Anthropic key the error shows from the lobby on, and no tale starts",
   sanitizeOps: false,
   sanitizeResources: false,
   async fn() {
-    await twoFriends("", async ({ host, act, muse }) => {
-      assert(host.view!.wolfError?.includes("MUSE_API_KEY is not set"), `lobby view: ${host.view!.wolfError}`);
+    await twoFriends("", async ({ host, act, claude }) => {
+      assert(host.view!.wolfError?.includes("no Anthropic API key"), `lobby view: ${host.view!.wolfError}`);
       const r = await act(host, "start");
-      assert(r.status === 503 && r.data.error?.includes("MUSE_API_KEY"), JSON.stringify(r));
-      assert(muse.calls === 0);
+      assert(r.status === 503 && r.data.error?.includes("server/keys.ts"), JSON.stringify(r));
+      assert(claude.calls === 0);
     });
   },
 });

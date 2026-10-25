@@ -71,7 +71,7 @@ function addMsg(m) {
 // ---- the left page --------------------------------------------------------------
 
 function renderTale() {
-  const wolf = 'a <b>Muse Spark</b> agent';
+  const wolf = 'a <b>Claude</b> agent';
   let html;
   if (mySeat() < 0) {
     html = `Once upon a time, a few friends shared a group chat. Each of you is <b>Red</b>, and when the tale begins each of you hides behind a storybook name. But the wolf slips in first: ${wolf} that reads every message and wears a friend's voice like a borrowed nightgown. Answer three questions on the path, question anyone who seems off, then name the wolf.`;
@@ -82,12 +82,12 @@ function renderTale() {
   if (html !== taleHtml) $('tale').innerHTML = taleHtml = html;
 }
 
-// Muse Spark couldn't play the wolf's last move (or isn't connected at all). Never hidden or softened:
+// Claude couldn't play the wolf's last move (or isn't connected at all). Never hidden or softened:
 // a wolf that's broken must not pass for a wolf that's being quiet.
 function renderWolfError() {
   const e = $('wolfErr');
   e.hidden = !V.wolfError;
-  const html = V.wolfError ? `<b>The wolf (Muse Spark) failed</b>${esc(V.wolfError)}` : '';
+  const html = V.wolfError ? `<b>The wolf (Claude) failed</b>${esc(V.wolfError)}` : '';
   if (e.innerHTML !== html) e.innerHTML = html;
 }
 
@@ -349,7 +349,7 @@ function renderEnd() {
   d.className = 'end';
   d.innerHTML = `${$('howl').outerHTML.replace('id="howl"', '').replace(/class="howl[^"]*"/, '')}
     <h3>${title}</h3>
-    <p>Muse Spark wore ${esc(w.name)}'s voice (${esc(w.voice)}). Its messages now glow gold above.</p>
+    <p>Claude wore ${esc(w.name)}'s voice (${esc(w.voice)}). Its messages now glow gold above.</p>
     <ul>${r.tells.map((t) => `<li>${esc(t)}</li>`).join('')}${votes ? `<li>The votes: ${votes}.</li>` : '<li>Nobody voted before the candle went out.</li>'}</ul>
     <span class="fin">${r.humansWin ? 'Happily Ever After' : 'The End'}</span>`;
   $('log').append(d);

@@ -1,16 +1,16 @@
-// `deno task test:muse`: asks the real Muse Spark wolf for a few lines, so you
-// can check the key, the model and the voice without playing a whole tale.
+// `deno task test:claude`: asks the real Claude Haiku wolf for a few lines, so you can
+// check the key and the voice without playing a whole tale. Spends a few cents at most.
 
 import { castOf, type Msg, newPlayer, newRoom, start } from "../server/game.ts";
 import { configFromEnv } from "../server/app.ts";
-import { Brain } from "../server/wolf.ts";
+import { Brain, WOLF_MODEL } from "../server/wolf.ts";
 
 const cfg = configFromEnv();
-if (!cfg.muse.apiKey) {
-  console.error("MUSE_API_KEY is empty. Put it in .env first.");
+if (!cfg.claude.apiKey) {
+  console.error("There's no Anthropic API key in server/keys.ts. Paste it into KEYS.anthropic first.");
   Deno.exit(1);
 }
-const brain = new Brain(cfg.muse);
+const brain = new Brain(cfg.claude);
 
 const players = ["a", "b", "c"].map((n) => newPlayer(n, 0));
 const room = newRoom("smoke", players[0], 0);
@@ -23,7 +23,7 @@ const msgs: Msg[] = [
   { id: "3", kind: "answer", seat: humans[1], text: "a gas station burrito i regret", at: 0, chapter: 0 },
 ];
 const me = castOf(room, room.wolfSeat);
-console.log(`model ${cfg.muse.model} (${cfg.muse.effort}), the wolf is ${me.name} (${me.voice})\n`);
+console.log(`model ${WOLF_MODEL} (effort ${cfg.claude.effort}), the wolf is ${me.name} (${me.voice})\n`);
 
 for (
   const task of [

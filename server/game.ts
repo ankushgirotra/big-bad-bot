@@ -58,7 +58,7 @@ export interface Room {
   /** voter seat -> accused seat */
   votes: Record<number, number>;
   result: Result | null;
-  /** Why Muse Spark couldn't play the wolf's last move. Cleared when a move goes through. */
+  /** Why Claude couldn't play the wolf's last move. Cleared when a move goes through. */
   wolfError: { text: string; at: number } | null;
   createdAt: number;
   updatedAt: number;

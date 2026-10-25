@@ -1,5 +1,5 @@
 // Store rules that need KV but not a whole server: who gets to reuse a server name, and
-// that no tale starts without Muse Spark to play the wolf.
+// that no tale starts without Claude to play the wolf.
 
 import { keys, Store } from "../server/store.ts";
 
@@ -43,14 +43,14 @@ Deno.test("a tale with someone still there keeps its name", async () => {
   });
 });
 
-Deno.test("without Muse Spark no tale starts, and the reason says why", async () => {
+Deno.test("without Claude no tale starts, and the reason says why", async () => {
   await withStore(async (store) => {
     const ann = await store.join("Old Woods", "Ann");
     await store.join("Old Woods", "Bo");
 
     const err = await store.act(ann.slug, ann.token, { type: "start" }).then(() => null, (e) => e);
     assert(err?.status === 503, `expected 503, got ${err}`);
-    assert(String(err.message).includes("MUSE_API_KEY is not set"), err.message);
+    assert(String(err.message).includes("no Anthropic API key"), err.message);
     assert((await store.room(ann.slug))!.phase === "lobby");
-  }, "Muse Spark isn't connected: MUSE_API_KEY is not set on this server.");
+  }, "Claude isn't connected: there's no Anthropic API key in server/keys.ts.");
 });

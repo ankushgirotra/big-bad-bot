@@ -145,7 +145,7 @@ div.c:hover{background:transparent;border-color:transparent}
 .field label{font-family:var(--display);font-size:17px}
 .field small{font-family:var(--tale);font-style:italic;font-size:14px;color:var(--muted)}
 .err{margin:0;font-family:var(--tale);font-style:italic;font-size:15px;color:var(--red);min-height:1.3em}
-/* Muse Spark couldn't play the wolf: loud on purpose, so nobody mistakes a broken wolf for a quiet one */
+/* Claude couldn't play the wolf: loud on purpose, so nobody mistakes a broken wolf for a quiet one */
 .wolf-err{margin:0;padding:10px 12px;border:1px solid var(--red);border-left-width:4px;border-radius:8px;
   background:color-mix(in srgb,var(--red) 9%,var(--cream));color:var(--red-deep);font-family:var(--text);font-size:14px;line-height:1.4}
 .wolf-err b{display:block;font-weight:600;margin-bottom:2px}

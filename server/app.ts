@@ -5,7 +5,8 @@ import { CAST } from "./cast.ts";
 import { openGlobalKv } from "./kv.ts";
 import { GameError, type Msg, type Timing, viewFor } from "./game.ts";
 import { slugify, Store } from "./store.ts";
-import { Brain, type MuseConfig, WolfPack } from "./wolf.ts";
+import { KEYS } from "./keys.ts";
+import { Brain, type ClaudeConfig, WolfPack } from "./wolf.ts";
 
 export interface Config {
   port: number;
@@ -13,7 +14,7 @@ export interface Config {
   timing: Timing;
   /** Multiplies every wolf delay. 1 feels human; tests use ~0.02. */
   wolfPace: number;
-  muse: MuseConfig;
+  claude: ClaudeConfig;
   /** Use this KV instead of opening global-kv (tests). */
   kv?: Deno.Kv;
   quiet?: boolean;
@@ -33,13 +34,8 @@ export function configFromEnv(env: Pick<Deno.Env, "get"> = Deno.env): Config {
       voteMs: num("VOTE_SECONDS", 45) * 1000,
     },
     wolfPace: num("WOLF_PACE", 1),
-    muse: {
-      apiKey: env.get("MUSE_API_KEY") ?? "",
-      baseUrl: env.get("MUSE_BASE_URL") || "https://api.meta.ai/v1",
-      // Not the "-contributor" models: those let Meta train on the chat.
-      model: env.get("MUSE_MODEL") || "muse-spark-1.3",
-      effort: env.get("MUSE_REASONING_EFFORT") || "low",
-    },
+    // The key comes only from server/keys.ts, so a key in someone's shell never bills another account.
+    claude: { apiKey: KEYS.anthropic.trim(), effort: "low" },
   };
 }
 
@@ -80,7 +76,7 @@ async function body(req: Request): Promise<Record<string, unknown>> {
 export async function startServer(cfg: Config) {
   const opened = cfg.kv ? { kv: cfg.kv, where: "provided" } : await openGlobalKv();
   const kv = opened.kv;
-  const brain = new Brain(cfg.muse);
+  const brain = new Brain(cfg.claude);
   const store = new Store(kv, cfg.timing, brain.problem);
   const pack = new WolfPack(store, brain, cfg.wolfPace);
   const streams = new Set<() => void>();
@@ -132,7 +128,7 @@ export async function startServer(cfg: Config) {
       const [online, typing] = await Promise.all([store.online(slug), store.typingSeats(slug)]);
       online.add(player.id);
       const view = viewFor(room, me.id, online, typing, Date.now());
-      // A server without Muse can't play the wolf at all; say so on every page, not just at the start.
+      // A server without Claude can't play the wolf at all; say so on every page, not just at the start.
       view.wolfError ??= brain.problem;
       send("view", { view, msgs, reset });
       // Whoever is connected when a candle burns out moves the tale on (it's idempotent).
@@ -205,7 +201,9 @@ export async function startServer(cfg: Config) {
         if (path === "/api/health") {
           return json({ ok: !brain.problem, kv: opened.where, wolf: brain.label }, brain.problem ? 503 : 200);
         }
-        if (path === "/api/servers") return json({ servers: await store.servers(), cast: CAST, wolfError: brain.problem });
+        if (path === "/api/servers") {
+          return json({ servers: await store.servers(), cast: CAST, wolfError: brain.problem });
+        }
         if (path === "/api/events") {
           return await events(slugify(url.searchParams.get("server")), url.searchParams.get("token"));
         }

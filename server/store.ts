@@ -80,7 +80,7 @@ function nextId(now: number): string {
 }
 
 export class Store {
-  /** wolfProblem: why Muse Spark can't play on this server at all (no tale starts then), or null. */
+  /** wolfProblem: why Claude can't play on this server at all (no tale starts then), or null. */
   constructor(readonly kv: Deno.Kv, readonly timing: Timing, readonly wolfProblem: string | null = null) {}
 
   async room(slug: string): Promise<Room | null> {
@@ -343,7 +343,7 @@ export class Store {
     });
   }
 
-  /** Muse Spark couldn't make the wolf's move: keep the reason on the room for every player to see. */
+  /** Claude couldn't make the wolf's move: keep the reason on the room for every player to see. */
   async wolfFailed(slug: string, game: number, text: string): Promise<void> {
     await this.mutate(slug, (room, now) => {
       if (!room || room.game !== game) return null;

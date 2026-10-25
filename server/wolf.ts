@@ -1,19 +1,24 @@
-// The wolf: a Muse Spark agent sitting in one seat, pretending to be a friend.
+// The wolf: a Claude agent sitting in one seat, pretending to be a friend.
 //
-// Brain   writes the wolf's lines and picks its vote, always with Muse Spark. There is
-//         no stand-in: when Muse can't play, the Brain throws and the room shows why.
+// Brain   writes the wolf's lines and picks its vote, always with Claude Haiku. There is
+//         no stand-in: when Claude can't play, the Brain throws and the room shows why.
 // Driver  decides when the wolf speaks and votes. It reacts to the room's state
 //         rather than to requests, so any server process can pick it up: one
 //         process per room holds a short KV lease and drives the wolf.
 
+import Anthropic from "@anthropic-ai/sdk";
 import { castOf, cleanText, mentions, type Msg, type Room } from "./game.ts";
 import { keys, type Store } from "./store.ts";
 
-export interface MuseConfig {
+/** The only model the wolf uses: it runs on a personal account, so it stays on Haiku. */
+export const WOLF_MODEL = "claude-haiku-5-5";
+
+export interface ClaudeConfig {
   apiKey: string;
-  baseUrl: string;
-  model: string;
-  effort: string;
+  /** "low" keeps lines quick; Haiku 5.5 would default to "medium". */
+  effort: "low" | "medium" | "high";
+  /** Only tests point this elsewhere (a fake Messages API). */
+  baseURL?: string;
 }
 
 type Task =
@@ -68,7 +73,9 @@ export function styleNotes(room: Room, msgs: Msg[]): string {
   const examples = said.slice(-8).map((m) => `${castOf(room, m.seat!).name}: ${m.text}`).join("\n");
   return [
     `How the real people here are writing (match this, it matters more than your seat's voice):`,
-    `- usually about ${median} word${median === 1 ? "" : "s"} a message, so keep yours around that length, as long as it still makes sense`,
+    `- usually about ${median} word${
+      median === 1 ? "" : "s"
+    } a message, so keep yours around that length, as long as it still makes sense`,
     `- ${Math.round(lower * 100)}% write all lowercase, ${Math.round(bare * 100)}% skip the final punctuation`,
     `- their latest lines, for tone, slang and messiness (copy the feel, never the words):\n${examples}`,
   ].join("\n");
@@ -125,22 +132,34 @@ export function finalVote(room: Room, planned: number, roll = Math.random()): nu
   return planned;
 }
 
-const MUSE_TIMEOUT_MS = 15_000;
+const CLAUDE_TIMEOUT_MS = 15_000;
 
 export class Brain {
-  constructor(readonly cfg: MuseConfig) {}
+  readonly #client: Anthropic;
+
+  constructor(readonly cfg: ClaudeConfig) {
+    this.#client = new Anthropic({
+      apiKey: cfg.apiKey,
+      // Only the key from server/keys.ts: never a token or base URL that happens to be in the environment.
+      authToken: null,
+      baseURL: cfg.baseURL ?? "https://api.anthropic.com",
+      timeout: CLAUDE_TIMEOUT_MS,
+      // The SDK retries 429s, 5xx and dropped connections itself; once is enough for a live game.
+      maxRetries: 1,
+    });
+  }
 
   get live(): boolean {
     return this.cfg.apiKey.length > 0;
   }
 
-  /** Why Muse Spark can't play at all on this server, or null when it can. */
+  /** Why Claude can't play at all on this server, or null when it can. */
   get problem(): string | null {
-    return this.live ? null : "Muse Spark isn't connected: MUSE_API_KEY is not set on this server.";
+    return this.live ? null : "Claude isn't connected: there's no Anthropic API key in server/keys.ts.";
   }
 
   get label(): string {
-    return this.problem ?? this.cfg.model;
+    return this.problem ?? `${WOLF_MODEL} (effort ${this.cfg.effort})`;
   }
 
   async line(room: Room, msgs: Msg[], task: Task): Promise<string> {
@@ -154,7 +173,7 @@ export class Brain {
     if (!LAUGH.test(me.voice)) {
       out = easeLaughs(out, msgs.filter((m) => m.seat === room.wolfSeat && m.kind !== "chap").map((m) => m.text));
     }
-    if (!out) throw new Error(`Muse Spark sent back an empty message (raw: ${JSON.stringify(raw.slice(0, 80))}).`);
+    if (!out) throw new Error(`Claude sent back an empty message (raw: ${JSON.stringify(raw.slice(0, 80))}).`);
     return out;
   }
 
@@ -168,58 +187,56 @@ export class Brain {
     );
     const choice = choices.find((i) => mentions(out, castOf(room, i).name));
     if (choice === undefined) {
-      throw new Error(`Muse Spark's vote didn't name anyone in the cast: ${JSON.stringify(out.slice(0, 80))}.`);
+      throw new Error(`Claude's vote didn't name anyone in the cast: ${JSON.stringify(out.slice(0, 80))}.`);
     }
     return choice;
   }
 
-  /** One OpenAI-compatible chat completion against the Meta Model API. Throws a readable error on failure. */
+  /** One Messages API call to Claude Haiku. Throws a readable error on failure. */
   async complete(system: string, user: string): Promise<string> {
     const problem = this.problem;
     if (problem) throw new Error(problem);
-    // The API now and then answers 404 model_not_found (or 429/5xx) to a request that works a
-    // moment later, so retry those a couple of times before giving up.
-    for (let attempt = 0;; attempt++) {
-      let res: Response;
-      try {
-        res = await this.#request(system, user);
-      } catch (err) {
-        if (err instanceof DOMException && err.name === "TimeoutError") {
-          throw new Error(`Muse Spark didn't answer within ${MUSE_TIMEOUT_MS / 1000}s.`);
-        }
-        throw new Error(`Couldn't reach Muse Spark: ${err instanceof Error ? err.message : err}`);
-      }
-      if (res.ok) {
-        const data = await res.json();
-        return String(data?.choices?.[0]?.message?.content ?? "");
-      }
-      const body = (await res.text()).slice(0, 300);
-      if (attempt < 2 && (res.status === 404 || res.status === 429 || res.status >= 500)) {
-        await new Promise((r) => setTimeout(r, 250 * (attempt + 1)));
-        continue;
-      }
-      let detail = body;
-      try {
-        detail = JSON.parse(body)?.error?.message ?? body;
-      } catch { /* not JSON */ }
-      throw new Error(`Muse Spark answered HTTP ${res.status}: ${detail}`);
+    let res: Anthropic.Message;
+    try {
+      res = await this.#client.messages.create({
+        model: WOLF_MODEL,
+        // Haiku 5.5 thinks before it answers (adaptive, on by default); leave room for that
+        // plus a one-line reply.
+        max_tokens: 4096,
+        output_config: { effort: this.cfg.effort },
+        system,
+        messages: [{ role: "user", content: user }],
+      });
+    } catch (err) {
+      throw new Error(explain(err));
     }
+    if (res.stop_reason === "refusal") {
+      throw new Error(`Claude declined to write the wolf's line (${res.stop_details?.category ?? "refusal"}).`);
+    }
+    // A reply can start with thinking blocks: read the text blocks by type, not position.
+    const text = res.content.flatMap((b) => b.type === "text" ? [b.text] : []).join("").trim();
+    if (!text && res.stop_reason === "max_tokens") throw new Error("Claude ran out of room before it wrote a line.");
+    return text;
   }
+}
 
-  #request(system: string, user: string): Promise<Response> {
-    return fetch(`${this.cfg.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${this.cfg.apiKey}`, "content-type": "application/json" },
-      body: JSON.stringify({
-        model: this.cfg.model,
-        reasoning_effort: this.cfg.effort,
-        // Muse Spark reasons before it answers; leave room for both.
-        max_completion_tokens: 1500,
-        messages: [{ role: "system", content: system }, { role: "user", content: user }],
-      }),
-      signal: AbortSignal.timeout(MUSE_TIMEOUT_MS),
-    });
+/** Turn an SDK error into one sentence the players can read. */
+function explain(err: unknown): string {
+  const detail = (e: InstanceType<typeof Anthropic.APIError>) => {
+    const body = e.error as { error?: { message?: string } } | undefined;
+    return body?.error?.message ?? e.message;
+  };
+  if (err instanceof Anthropic.AuthenticationError) {
+    return "Claude rejected the API key (HTTP 401). Check the key in server/keys.ts.";
   }
+  if (err instanceof Anthropic.PermissionDeniedError) return `Claude refused the API key (HTTP 403): ${detail(err)}`;
+  if (err instanceof Anthropic.RateLimitError) return `Claude is rate-limiting this key (HTTP 429): ${detail(err)}`;
+  if (err instanceof Anthropic.APIConnectionTimeoutError) {
+    return `Claude didn't answer within ${CLAUDE_TIMEOUT_MS / 1000}s.`;
+  }
+  if (err instanceof Anthropic.APIConnectionError) return `Couldn't reach Claude: ${err.message}`;
+  if (err instanceof Anthropic.APIError) return `Claude answered HTTP ${err.status}: ${detail(err)}`;
+  return `Claude failed: ${err instanceof Error ? err.message : String(err)}`;
 }
 
 // ---- Driver ---------------------------------------------------------------------
@@ -430,7 +447,7 @@ class Driver {
         wait: Math.floor(Math.random() * friends),
         readAt: room.phaseStartedAt + rand(3_000, 8_000) * P,
         capAt: room.phaseStartedAt + rand(12_000, 20_000) * P,
-        // Ask Muse now, so its thinking time doesn't make the wolf late.
+        // Ask Claude now, so its thinking time doesn't make the wolf late.
         choice: this.pack.brain.vote(room, await store.messages(this.slug, g)),
       });
       plan.choice.catch(() => {}); // a failure is reported when the vote is due, not as a crash now
@@ -468,7 +485,7 @@ class Driver {
         );
         if (spoke) return;
       }
-      // Show "is writing…" while Muse thinks, so its thinking time counts as typing time,
+      // Show "is writing…" while Claude thinks, so its thinking time counts as typing time,
       // then finish typing it out like a person would.
       const started = Date.now();
       const pending = this.pack.brain.line(room, msgs, task);
@@ -514,7 +531,7 @@ class Driver {
     if (!this.#stopped && this.#leader) await store.wolfVote(this.slug, g, finalVote(room, planned));
   }
 
-  /** Muse couldn't play this move: put the reason on the room so every player sees it. */
+  /** Claude couldn't play this move: put the reason on the room so every player sees it. */
   async #failed(g: number, err: unknown) {
     const text = err instanceof Error ? err.message : String(err);
     console.warn(`[wolf ${this.slug}] ${text}`);
